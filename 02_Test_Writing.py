@@ -1,7 +1,7 @@
 import os
 
 # Define the file path
-file_path = '/src/results/checkpoints/test.txt'
+file_path = '/home/results/checkpoints/test.txt'
 
 # Extract the directory path from the file path
 directory = os.path.dirname(file_path)
