@@ -10,6 +10,7 @@ from anomalib.metrics import F1Score, AUPR, AUROC, Evaluator
 from anomalib.visualization import ImageVisualizer
 from torchvision.transforms import Compose, Normalize, Resize
 from anomalib.loggers import AnomalibTensorBoardLogger
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 from anomalib.data.datasets.image.mvtecad import CATEGORIES
 import torch
@@ -294,22 +295,44 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     # 6. Access the results
     iO = 0
     niO = 0
+    itemIdx = 0
+    import numpy as np
+    trueAnomalies = []
+    predLabels = []
     if predictions is not None:
         for i, batch in enumerate(predictions):
             for j, prediction in enumerate(batch):
+                
+                trueAnomaly = datamodule.val_data.samples['label_index'][itemIdx]
                 image_path = prediction.image_path
                 anomaly_map = prediction.anomaly_map  # Pixel-level anomaly heatmap
-                pred_label = prediction.pred_label  # Image-level label (0: normal, 1: anomalous)
-                if pred_label:
-                    niO+=1
-                    print(f"Predicted image {j} to be anomalous.")
-                else:
-                    iO+=1
-                    print(f"Predicted image {j} to be normal.")
+                predLabel = prediction.pred_label  # Image-level label (0: normal, 1: anomalous)
+                trueAnomalies.append(trueAnomaly)
+                predLabels.append(predLabel)
+                itemIdx+=1
+                
+                # if predLabel and trueAnomaly:
+                    
+                #     niO+=1
+                #     print(f"Predicted image {j} to be anomalous.")
+                # else:
+                #     iO+=1
+                #     print(f"Predicted image {j} to be normal.")
                 pred_score = prediction.pred_score  # Image-level anomaly score
                 print(f"Anomaly score: {pred_score}")
-    print(f"Number of predicted anomalous samples: {niO}")
-    print(f"Number of predicted normal samples: {iO}")
+    trueAnomalies = np.asarray(trueAnomalies)
+    predLabels = np.asarray(predLabels)
+    confusionMatrix = confusion_matrix(trueAnomalies, predLabels)
+    
+    
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.subplots()
+    
+    _ = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
+    print(confusion_matrix)
+    # print(f"Number of predicted anomalous samples: {niO}")
+    # print(f"Number of predicted normal samples: {iO}")
             
             # torchvision.utils.save_image(prediction.image, os.path.join(prediction_path, f"cable_image_{i}.png"))
             # torchvision.utils.save_image(prediction.anomaly_map, os.path.join(prediction_path, f"cable_anomaly_map_{i}.png"))
