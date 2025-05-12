@@ -3,7 +3,7 @@ import argparse
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor
 from anomalib.engine import Engine
 from anomalib.models import EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
-from anomalib.callbacks import ModelCheckpoint
+from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback, TilerConfigurationCallback
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import F1Score, AUPR, AUROC, Evaluator
@@ -51,7 +51,7 @@ CATEGORIES = {
     "btech": ["01",
               "02",
               "03"]}
-MODELS = ["efficientad-s", "efficientad-m", "patchcore", "fastflow", "dsr", "reverse_distillation/rd", "stfpm"]     # TODO GLASS(not in anomalib)
+MODELS = ["efficientad-s", "efficientad-m", "patchcore", "fastflow", "dsr", "reverse_distillation", "rd", "stfpm"]     # TODO GLASS(not in anomalib)
 
 DEFAULT_FIELDS_CONFIG = {
     "image": {},
@@ -112,6 +112,9 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
         monitor="train_loss",  # val_loss not found?
         verbose=True,
     )
+    
+    graphCallback = GraphLogger()
+    timerCallback = TimerCallback()
     
     tensorboard_logger = AnomalibTensorBoardLogger(
         save_dir=os.path.join(resultsDir, "logs"),
@@ -260,7 +263,7 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     engine = Engine(
         max_epochs=max_epochs,
         default_root_dir='results',
-        callbacks=[checkpointCallback],
+        callbacks=[checkpointCallback, graphCallback, timerCallback],
         logger=tensorboard_logger,
         accelerator="cpu",
         devices=1
@@ -324,13 +327,18 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     predLabels = np.asarray(predLabels)
     confusionMatrix = confusion_matrix(trueAnomalies, predLabels)
     
-    
     import matplotlib.pyplot as plt
     fig = plt.figure()
     ax = fig.subplots()
     
-    _ = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
-    print(confusion_matrix)
+    CM_plot = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
+    print(confusionMatrix)
+    CM_plot.figure_.savefig(os.path.join(resultsDir, "confusion_matrix.png"))
+    with open(os.path.join(resultsDir, "results.txt"), 'w') as f:
+        f.write(f"TP: {confusionMatrix[1][1]}\n")
+        f.write(f"TN: {confusionMatrix[0][0]}\n")
+        f.write(f"FP: {confusionMatrix[0][1]}\n")
+        f.write(f"FN: {confusionMatrix[1][0]}\n")
     # print(f"Number of predicted anomalous samples: {niO}")
     # print(f"Number of predicted normal samples: {iO}")
             
@@ -339,22 +347,19 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
             
     print("Finished")
 
-            
-    
-    
     # engine.export(model)
 
 if __name__ == "__main__":
     # Set up argument parsing
     parser = argparse.ArgumentParser(description="Train an anomaly detection model.")
-    parser.add_argument("--dataset", type=str, default="kolektor", help="Which MVTec category to train on")
-    parser.add_argument("--category", type=str, default="none", help="Which MVTec category to train on")
-    parser.add_argument("--modelName", type=str, default="EfficientAD-S", help="Which MVTec category to train on")
+    parser.add_argument("--dataset", type=str, default="kolektor", help="Which dataset to train on")
+    parser.add_argument("--category", type=str, default="none", help="Which category to train on")
+    parser.add_argument("--modelName", type=str, default="efficientad-s", help="Which method to train")
     
     parser.add_argument("--train_batch_size", type=int, default=1, help="Number of images per training batch")
     parser.add_argument("--eval_batch_size", type=int, default=32, help="Number of images per validation/test batch")
     parser.add_argument("--num_workers", type=int, default=8, help="Number of parallel processes for data loading")
-    parser.add_argument("--max_epochs", type=int, default=1, help="Number of epochs to train the model")
+    parser.add_argument("--max_epochs", type=int, default=3, help="Number of epochs to train the model")
 
     # Parse the arguments
     args = parser.parse_args()
