@@ -333,8 +333,8 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     
     CM_plot = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
     print(confusionMatrix)
-    CM_plot.figure_.savefig(os.path.join(resultsDir, "confusion_matrix.png"))
-    with open(os.path.join(resultsDir, "results.txt"), 'w') as f:
+    CM_plot.figure_.savefig(os.path.join(prediction_path, f"{modelName}_confusion_matrix.png"))
+    with open(os.path.join(prediction_path, f"{modelName}_results.txt"), 'w') as f:
         f.write(f"TP: {confusionMatrix[1][1]}\n")
         f.write(f"TN: {confusionMatrix[0][0]}\n")
         f.write(f"FP: {confusionMatrix[0][1]}\n")
