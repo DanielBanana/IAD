@@ -123,6 +123,8 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     
     # 2. Create a dataset
     if dataset.lower() == "mvtecad":
+        if category == "metal_nut":
+            category = "metal nut"
         datasetPath = f"datasets/MVTecAD"
         print(f"searching for dataset at: {datasetPath}")
         datamodule = MVTecAD(
@@ -334,11 +336,35 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     CM_plot = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
     print(confusionMatrix)
     CM_plot.figure_.savefig(os.path.join(prediction_path, f"{modelName}_confusion_matrix.png"))
+    
+    tp = confusion_matrix[1][1]
+    tn = confusion_matrix[0][0]
+    fp = confusion_matrix[0][1]
+    fn = confusion_matrix[1][0]
+    
+    positive = tp + fn
+    negative = tn + fp
+    tpr = tp / positive
+    tnr = tn / negative
+    fnr = fn / positive
+    fpr = fp / negative
+    f1_score = 2 * tp/(2*tp + fp + fn)
+    
     with open(os.path.join(prediction_path, f"{modelName}_results.txt"), 'w') as f:
-        f.write(f"TP: {confusionMatrix[1][1]}\n")
-        f.write(f"TN: {confusionMatrix[0][0]}\n")
-        f.write(f"FP: {confusionMatrix[0][1]}\n")
-        f.write(f"FN: {confusionMatrix[1][0]}\n")
+        f.write(f"Model: {modelName}\n")
+        f.write(f"Dataset: {dataset}\n")
+        f.write(f"Category: {category}\n")
+        f.write(f"Positive: {positive}\n")
+        f.write(f"Negative: {negative}\n")
+        f.write(f"TP: {tp}\n")
+        f.write(f"TN: {tn}\n")
+        f.write(f"FP: {fp}\n")
+        f.write(f"FN: {fn}\n")
+        f.write(f"TPR: {tpr}\n")
+        f.write(f"TNR: {tnr}\n")
+        f.write(f"FNR: {fnr}\n")
+        f.write(f"FPR: {fpr}\n")
+        f.write(f"F1 Score: {f1_score}\n")
     # print(f"Number of predicted anomalous samples: {niO}")
     # print(f"Number of predicted normal samples: {iO}")
             
