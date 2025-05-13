@@ -15,6 +15,7 @@ RUN anomalib install --option core -v
 RUN pip install scikit-learn
 RUN pip install openvino
 RUN pip install dotenv
+RUN pip install tensorboard
 
 WORKDIR /IAD
 # Copy your Python scripts into the container
