@@ -26,6 +26,7 @@ import glob
 import os
 import cv2
 from anomalib.visualization import ImageVisualizer
+from anomalib.visualization.image.item_visualizer import visualize_image_item
 from anomalib.callbacks import LoadModelCallback
 import argparse
 from torchvision.transforms import Compose, Normalize, Resize
@@ -256,7 +257,7 @@ if __name__ == "__main__":
         max_epochs=1,
         default_root_dir='results',
         callbacks=[checkpointCallback],
-        accelerator="cpu",
+        accelerator="auto",
         devices=1
     )
     
@@ -314,7 +315,15 @@ if __name__ == "__main__":
     if predictions is not None:
         for i, batch in enumerate(predictions):
             for j, prediction in enumerate(batch):
-                
+                image = visualize_image_item(
+                    prediction,
+                    fields=visualizer.fields,
+                    overlay_fields=visualizer.overlay_fields,
+                    field_size=visualizer.field_size,
+                    fields_config=visualizer.fields_config,
+                    overlay_fields_config=visualizer.overlay_fields_config,
+                    text_config=visualizer.text_config,
+                )
                 trueAnomaly = datamodule.val_data.samples['label_index'][itemIdx]
                 image_path = prediction.image_path
                 anomaly_map = prediction.anomaly_map  # Pixel-level anomaly heatmap
@@ -344,10 +353,10 @@ if __name__ == "__main__":
     print(confusionMatrix)
     CM_plot.figure_.savefig(os.path.join(prediction_path, f"{modelName}_confusion_matrix.png"))
     
-    tp = confusion_matrix[1][1]
-    tn = confusion_matrix[0][0]
-    fp = confusion_matrix[0][1]
-    fn = confusion_matrix[1][0]
+    tp = confusionMatrix[1][1]
+    tn = confusionMatrix[0][0]
+    fp = confusionMatrix[0][1]
+    fn = confusionMatrix[1][0]
     
     positive = tp + fn
     negative = tn + fp
