@@ -11,6 +11,8 @@ from anomalib.visualization import ImageVisualizer
 from torchvision.transforms import Compose, Normalize, Resize
 from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import yaml
+
 
 from anomalib.data.datasets.image.mvtecad import CATEGORIES
 import torch
@@ -85,25 +87,25 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     val_split_mode = "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
     val_split_ratio = 0.5 # not used if same_as_text
     
-    resultsDir = os.path.join("results", dataset)
-    prediction_path = os.path.join("results", dataset, category)
-    checkpointDir = os.path.join("results", dataset, category, "checkpoints")
+    # resultsDir = os.path.join("results", dataset)
+    # prediction_path = os.path.join("results", dataset, category)
+    # checkpointDir = os.path.join("results", dataset, category, "checkpoints")
     
-    if not os.path.exists(prediction_path):
-        os.makedirs(prediction_path)
-        print(f"Directory created for predictions at: {prediction_path}")
-    else:
-        print(f"Directory for predictions already exists at: {prediction_path}")
+    # if not os.path.exists(prediction_path):
+    #     os.makedirs(prediction_path)
+    #     print(f"Directory created for predictions at: {prediction_path}")
+    # else:
+    #     print(f"Directory for predictions already exists at: {prediction_path}")
     
-    if not os.path.exists(checkpointDir):
-        os.makedirs(checkpointDir)
-        print(f"Directory created: {checkpointDir}")
-    else:
-        print(f"Directory already exists: {checkpointDir}")
+    # if not os.path.exists(checkpointDir):
+    #     os.makedirs(checkpointDir)
+    #     print(f"Directory created: {checkpointDir}")
+    # else:
+    #     print(f"Directory already exists: {checkpointDir}")
     
-    checkpointFile = f'{model_name}_{category}_best'
-    checkpointPath = os.path.join(checkpointDir, checkpointFile + '.ckpt')
-    print(f"Saving best result to: {checkpointPath}")
+    # checkpointFile = f'{model_name}_{category}_best'
+    # checkpointPath = os.path.join(checkpointDir, checkpointFile + '.ckpt')
+    # print(f"Saving best result to: {checkpointPath}")
 
     # 4. Create the training engine
     checkpointCallback = ModelCheckpoint(
@@ -118,8 +120,8 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     
     logger = AnomalibTensorBoardLogger(
         save_dir="logs",#os.path.join(resultsDir, "logs"),
-        name="FastFlow-EfficientAD",
-        version=1)
+        name=f"{modelName}-{dataset}-{category}",
+        version=0)
     
     # 2. Create a dataset
     if dataset.lower() == "mvtecad":
@@ -218,14 +220,18 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     # val metrics (needed for early stopping)
     image_auroc = AUROC(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_auroc = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
-    val_metrics = [image_auroc, pixel_auroc]
+    image_aupr = AUPR(fields=["pred_score", "gt_label"], prefix="image_")
+    pixel_aupr = AUPR(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
+    val_metrics = [image_auroc, pixel_auroc, image_aupr, pixel_aupr]
 
     # test_metrics
     image_auroc = AUROC(fields=["pred_score", "gt_label"], prefix="image_")
     image_f1score = F1Score(fields=["pred_label", "gt_label"], prefix="image_")
     pixel_auroc = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
     pixel_f1score = F1Score(fields=["pred_mask", "gt_mask"], prefix="pixel_")
-    test_metrics = [image_auroc, image_f1score, pixel_auroc, pixel_f1score]
+    image_aupr = AUPR(fields=["pred_score", "gt_label"], prefix="image_")
+    pixel_aupr = AUPR(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
+    test_metrics = [image_auroc, image_f1score, pixel_auroc, pixel_f1score, image_aupr, pixel_aupr]
     evaluator = Evaluator(val_metrics=val_metrics, test_metrics=test_metrics)
     # evaluator = Evaluator(test_metrics=[f1_score, auroc, aupr])
     # evaluator = False
@@ -237,7 +243,6 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
                             visualizer=visualizer,
                             evaluator=evaluator,
                             model_size="small")
-
     elif modelName == "efficientad-m":
         model = EfficientAd(pre_processor=preProcessor,
                             post_processor=postProcessor,
@@ -284,7 +289,7 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
                           post_processor=postProcessor,
                           visualizer=visualizer,
                           evaluator=evaluator)
-        
+
     engine = Engine(
         max_epochs=max_epochs,
         default_root_dir='results',
@@ -298,7 +303,8 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     # 5. Train the model
     engine.fit(datamodule=datamodule, model=model)
     
-
+    resultsPath = engine._cache.args["default_root_dir"]
+    
     # 6. Validate on validation set. adjust thresholds
     runValidation = 'Yes' if engine._should_run_validation(engine.model, None) else 'No'
     
@@ -332,7 +338,6 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     if predictions is not None:
         for i, batch in enumerate(predictions):
             for j, prediction in enumerate(batch):
-                
                 trueAnomaly = datamodule.val_data.samples['label_index'][itemIdx]
                 image_path = prediction.image_path
                 anomaly_map = prediction.anomaly_map  # Pixel-level anomaly heatmap
@@ -340,14 +345,6 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
                 trueAnomalies.append(trueAnomaly)
                 predLabels.append(predLabel)
                 itemIdx+=1
-                
-                # if predLabel and trueAnomaly:
-                    
-                #     niO+=1
-                #     print(f"Predicted image {j} to be anomalous.")
-                # else:
-                #     iO+=1
-                #     print(f"Predicted image {j} to be normal.")
                 pred_score = prediction.pred_score  # Image-level anomaly score
                 print(f"Anomaly score: {pred_score}")
     trueAnomalies = np.asarray(trueAnomalies)
@@ -360,7 +357,7 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
     
     CM_plot = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
     print(confusionMatrix)
-    CM_plot.figure_.savefig(os.path.join(prediction_path, f"{modelName}_confusion_matrix.png"))
+    # CM_plot.figure_.savefig(os.path.join(prediction_path, f"{modelName}_confusion_matrix.png"))
     
     logger.add_image(CM_plot.figure_, "confusion_matrix", global_step=0)    
     
@@ -382,22 +379,14 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
                                "image_FNR": fnr,
                                "image_FPR": fpr},
                        step=0)
+    
+    res[0]["image_TPR"] = float(tpr)
+    res[0]["image_TNR"] = float(tnr)
+    res[0]["image_FNR"] = float(fnr)
+    res[0]["image_FPR"] = float(fpr)
         
-    with open(os.path.join(prediction_path, f"{modelName}_results.txt"), 'w') as f:
-        f.write(f"Model: {modelName}\n")
-        f.write(f"Dataset: {dataset}\n")
-        f.write(f"Category: {category}\n")
-        f.write(f"Positive: {positive}\n")
-        f.write(f"Negative: {negative}\n")
-        f.write(f"TP: {tp}\n")
-        f.write(f"TN: {tn}\n")
-        f.write(f"FP: {fp}\n")
-        f.write(f"FN: {fn}\n")
-        f.write(f"TPR: {tpr}\n")
-        f.write(f"TNR: {tnr}\n")
-        f.write(f"FNR: {fnr}\n")
-        f.write(f"FPR: {fpr}\n")
-        f.write(f"F1 Score: {f1_score}\n")
+    with open(os.path.join(logger.log_dir, "results.yaml"), "w") as file:
+        yaml.dump(res, file, default_flow_style=False)
             
     print("Finished")
 
@@ -406,14 +395,14 @@ def main(dataset, category, model_name, train_batch_size, eval_batch_size, num_w
 if __name__ == "__main__":
     # Set up argument parsing
     parser = argparse.ArgumentParser(description="Train an anomaly detection model.")
-    parser.add_argument("--dataset", type=str, default="kolektor", help="Which dataset to train on")
-    parser.add_argument("--category", type=str, default="none", help="Which category to train on")
+    parser.add_argument("--dataset", type=str, default="mvtecad", help="Which dataset to train on")
+    parser.add_argument("--category", type=str, default="leather", help="Which category to train on")
     parser.add_argument("--modelName", type=str, default="fastflow", help="Which method to train")
     
     parser.add_argument("--train_batch_size", type=int, default=1, help="Number of images per training batch")
     parser.add_argument("--eval_batch_size", type=int, default=32, help="Number of images per validation/test batch")
     parser.add_argument("--num_workers", type=int, default=8, help="Number of parallel processes for data loading")
-    parser.add_argument("--max_epochs", type=int, default=5, help="Number of epochs to train the model")
+    parser.add_argument("--max_epochs", type=int, default=1, help="Number of epochs to train the model")
 
     # Parse the arguments
     args = parser.parse_args()
