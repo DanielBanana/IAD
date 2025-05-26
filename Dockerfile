@@ -16,6 +16,8 @@ RUN pip install scikit-learn
 RUN pip install openvino
 RUN pip install dotenv
 RUN pip install tensorboard
+RUN pip install seaborn
+RUN pip install matplotlib
 
 WORKDIR /IAD
 # Copy your Python scripts into the container
