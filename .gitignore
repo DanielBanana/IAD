@@ -9,3 +9,13 @@ res
 results
 
 pre_trained
+
+runs
+
+logs
+
+lightning_logs
+
+res__
+
+wandb
