@@ -1,5 +1,13 @@
 import sys
 import argparse
+import torch
+import os
+import time
+import logging
+import numpy as np
+import yaml
+import matplotlib.pyplot as plt
+
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder
 from anomalib.engine import Engine
 from anomalib.models import EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
@@ -8,129 +16,19 @@ from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import F1Score, AUPR, AUROC, Evaluator
 from anomalib.visualization import ImageVisualizer
-from torchvision.transforms import Compose, Normalize, Resize
+from anomalib.data.datasets.image.mvtecad import CATEGORIES
 from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
+
+from torchvision.transforms import Compose, Normalize, Resize
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-import yaml
-import matplotlib.pyplot as plt
 from lightning.pytorch.callbacks import TQDMProgressBar
 
-from anomalib.data.datasets.image.mvtecad import CATEGORIES
-import torch
-import os
-
-
-DATASETS = ["custom", "mvtecad", "kolektor", "visa", "btech"]     # TODO. "isp-ad", "wfdd", (not in anomalib)
-CATEGORIES = {
-    "custom" : ["simple"],
-    "mvtecad": ["bottle",
-                "cable",
-                "capsule",
-                "hazelnut",
-                "metal nut",
-                "pill",
-                "screw",
-                "toothbrush",
-                "transistor",
-                "zipper",
-                "carpet",
-                "grid",
-                "leather",
-                "tile",
-                "wood"],
-    "kolektor": ["none"],
-    "visa": ["candle",
-            "capsules",
-            "cashew",
-            "chewinggum",
-            "fryum",
-            "macaroni1",
-            "macaroni2",
-            "pcb1",
-            "pcb2",
-            "pcb3",
-            "pcb4",
-            "pipe_fryum"],
-    "btech": ["01",
-              "02",
-              "03"]}
-MODELS = ["efficientad-s", "efficientad-m", "patchcore", "fastflow", "dsr", "reverse_distillation", "rd", "stfpm"]     # TODO GLASS(not in anomalib)
-
-DEFAULT_FIELDS_CONFIG = {
-    "image": {},
-    "gt_mask": {},
-    "pred_mask": {},
-    "anomaly_map": {"colormap": True, "normalize": False},
-}
-
-DEFAULT_OVERLAY_FIELDS_CONFIG = {
-    "gt_mask": {"color": (255, 255, 255), "alpha": 1.0, "mode": "contour"},
-    "pred_mask": {"color": (255, 0, 0), "alpha": 1.0, "mode": "contour"},
-}
-
-DEFAULT_TEXT_CONFIG = {
-    "enable": True,
-    "font": None,
-    "size": None,
-    "color": "white",
-    "background": (0, 0, 0, 128),
-}
+from settings import *
 
 # only for Cluster with NVIDIA L40S GPU
 torch.set_float32_matmul_precision("high")          # https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
 
-def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_workers, max_epochs, version):
-   
-    # 1. Set up the environment
-    test_split_mode = "from_dir" # none, from_dir, synthetic, train_data
-    test_split_ratio = 0.2
-    val_split_mode = "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
-    val_split_ratio = 0.5 # not used if same_as_text
-    
-    logAndResultsDir = "logs"
-    runName = f"{modelName}-{dataset}-{category}"
-    checkpointDir = os.path.join(logAndResultsDir, runName, f"version_{version}", "checkpoints")
-
-    checkpointCallback = ModelCheckpoint(
-        dirpath=checkpointDir,
-        filename="best",
-        monitor="train_loss",  # val_loss not found?
-        verbose=True,
-        save_top_k=1,  # Save only the best model
-        mode="min",  # Save the model with the minimum training loss
-    )
-    
-    checkpointCallback.FILE_EXTENSION = ".pt"  # Set the file extension for checkpoints
-    
-    graphCallback = GraphLogger()
-    timerCallback = TimerCallback()
-    progressBar = TQDMProgressBar(refresh_rate=50)
-    
-    callbacks = [progressBar, checkpointCallback, graphCallback, timerCallback]
-    
-    logger = AnomalibTensorBoardLogger(
-        save_dir=logAndResultsDir,
-        name=runName,
-        version=version)
-    
-    # 3. Initialize the model
-    # preProcessor = PreProcessor(transform = Compose([Resize((224, 224)), Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]))
-    preProcessor = True
-    
-    visualizer = ImageVisualizer(# output_dir=prediction_path,
-                                 fields=["image", "gt_mask"],
-                                 overlay_fields=[("image", ["anomaly_map"]), ("image", ["pred_mask"])],
-                                 field_size=(256,256),
-                                 fields_config=DEFAULT_FIELDS_CONFIG,
-                                 overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
-                                 text_config=DEFAULT_TEXT_CONFIG)
-    # visualizer = True
-    postProcessor = PostProcessor(enable_normalization=True,
-                                  enable_threshold_matching=True,
-                                  enable_thresholding=True,
-                                  image_sensitivity=0.01,
-                                  pixel_sensitivity=0.01)
-    #postProcessor = True
+def define_metrics():
     # val metrics (needed for early stopping)
     image_auroc = AUROC(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_auroc = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
@@ -146,18 +44,10 @@ def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_wo
     image_aupr = AUPR(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_aupr = AUPR(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
     test_metrics = [image_auroc, image_f1score, pixel_auroc, pixel_f1score, image_aupr, pixel_aupr]
-    evaluator = Evaluator(val_metrics=val_metrics, test_metrics=test_metrics)
     
-    engine = Engine(
-        max_epochs=max_epochs,
-        default_root_dir='results_training',
-        callbacks=callbacks,
-        logger=logger,
-        accelerator="auto",
-        devices=1,
-        log_every_n_steps=10
-    )
-    
+    return val_metrics, test_metrics
+
+def create_datamodule(dataset, category, train_batch_size, eval_batch_size, num_workers, test_split_mode, test_split_ratio, val_split_mode, val_split_ratio):
     # 2. Create a dataset
     if dataset.lower() == "mvtecad":
         if category == "metal_nut":
@@ -233,7 +123,10 @@ def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_wo
             val_split_ratio=val_split_ratio
         )
         datamodule.setup()
+        
+    return datamodule
 
+def create_model(modelName, preProcessor, postProcessor, visualizer, evaluator):
     if modelName == "efficientad-s":
         # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
         model = EfficientAd(pre_processor=preProcessor,
@@ -287,46 +180,57 @@ def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_wo
                           post_processor=postProcessor,
                           visualizer=visualizer,
                           evaluator=evaluator)
+    return model
 
-    # 5. Train the model
-    engine.fit(datamodule=datamodule, model=model)
-    
-    resultsPath = engine._cache.args["default_root_dir"]
-    
-    # 6. Validate on validation set. adjust thresholds
-    runValidation = 'Yes' if engine._should_run_validation(engine.model, None) else 'No'
-    
-    print(f"Should we run validation: {runValidation}")
-    
-    if engine._should_run_validation(engine.model, None):
-        engine.validate(
-            model=model,
-            datamodule=datamodule,
-            # ckpt_path=checkpointPath
-        )
-
-    # 7. Test on test set
-    res = engine.test(
-        model=model,
-        datamodule=datamodule,
-        # ckpt_path=checkpointPath
+def setupTensorboardLoggingAndCallbacks(version, modelName, dataset, category):
+    logAndResultsDir = "logs"
+    runName = f"{modelName}-{dataset}-{category}"
+    checkpointDir = os.path.join(logAndResultsDir, runName, f"version_{version}", "checkpoints")
+    checkpointCallback = ModelCheckpoint(
+        dirpath=checkpointDir,
+        filename="best",
+        monitor="train_loss",  # val_loss not found?
+        verbose=True,
+        save_top_k=1,  # Save only the best model
+        mode="min",  # Save the model with the minimum training loss
     )
     
-    import time
-    takenTime = time.time() - timerCallback.start
-    throughput = timerCallback.num_images / takenTime
-    print(f"Testing took {takenTime:.0f} seconds")
-    print(f"Throughput (batchSize = {eval_batch_size}): {throughput:.2f} images/second")
+    checkpointCallback.FILE_EXTENSION = ".pt"  # Set the file extension for checkpoints
     
-    # 8. Predict on test set
-    predictions = engine.predict(
-        model=model,
-        datamodule=datamodule,
-        # ckpt_path=checkpointPath
-    )
+    graphCallback = GraphLogger()
+    timerCallback = TimerCallback()
+    progressBar = TQDMProgressBar(refresh_rate=50)
     
+    callbacks = {
+        "progress_bar": progressBar,
+        "checkpoint": checkpointCallback,
+        "graph": graphCallback,
+        "timer": timerCallback
+    }
+    
+    tblogger = AnomalibTensorBoardLogger(
+        save_dir=logAndResultsDir,
+        name=runName,
+        version=version)
+    
+    return tblogger, callbacks
+
+def setupLogging(version, modelName, dataset, category):
+    if not os.path.exists("logs"):
+        os.makedirs("logs")
+    logger = logging.getLogger("Trainer")
+    logger.setLevel(logging.INFO)
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler = logging.FileHandler(os.path.join("logs", f"{modelName}-{dataset}-{category}-v{version}.log"))
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(file_handler)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    logger.addHandler(console_handler)
+    return logger
+
+def createConfusionMatrixDisplay(predictions, datamodule):
     itemIdx = 0
-    import numpy as np
     trueAnomalies = []
     predLabels = []
     if predictions is not None:
@@ -344,16 +248,20 @@ def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_wo
     trueAnomalies = np.asarray(trueAnomalies)
     predLabels = np.asarray(predLabels)
     confusionMatrix = confusion_matrix(trueAnomalies, predLabels)
+    return confusionMatrix, trueAnomalies, predLabels
     
+def logConfusionMatrix(logger, tblogger, confusionMatrix, trueAnomalies, predLabels):
     fig = plt.figure()
     ax = fig.subplots()
     
     CM_plot = ConfusionMatrixDisplay.from_predictions(trueAnomalies, predLabels, ax=ax)
-    print(confusionMatrix)
+    logger.info("Confusion Matrix:")
+    logger.info(confusionMatrix)
     # CM_plot.figure_.savefig(os.path.join(prediction_path, f"{modelName}_confusion_matrix.png"))
     
-    logger.add_image(CM_plot.figure_, "confusion_matrix", global_step=0)    
+    tblogger.add_image(CM_plot.figure_, "confusion_matrix", global_step=0)
     
+def logMetrics(tblogger, res, confusionMatrix, takenTime, throughput):
     tp = confusionMatrix[1][1]
     tn = confusionMatrix[0][0]
     fp = confusionMatrix[0][1]
@@ -380,7 +288,7 @@ def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_wo
     res[0]["taken_time"] = takenTime
     res[0]["throughput"] = throughput
     
-    logger.log_metrics(metrics={"image_positive": positive,
+    tblogger.log_metrics(metrics={"image_positive": positive,
                             "image_negative": negative,
                             "image_tp": tp,
                             "image_tn": tn,
@@ -393,11 +301,112 @@ def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_wo
                             "taken_time": takenTime,
                             "throughput": throughput},
                     step=0)
-        
-    with open(os.path.join(logger.log_dir, "train_results.yaml"), "w") as file:
+
+
+
+def main(dataset, category, modelName, train_batch_size, eval_batch_size, num_workers, max_epochs, version):
+   
+    # 1. Set up the environment
+    test_split_mode = "from_dir" # none, from_dir, synthetic, train_data
+    test_split_ratio = 0.2
+    val_split_mode = "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
+    val_split_ratio = 0.5 # not used if same_as_text
+
+    tblogger, callbacks = setupTensorboardLoggingAndCallbacks(version)
+    logger = setupLogging(version, modelName, dataset, category)
+    
+    # 2. Setup Dataprocessing
+    logger.info(f"Setting up pre-processing for model {modelName}")
+    preProcessor = True
+    
+    visualizer = ImageVisualizer(# output_dir=prediction_path,
+                                 fields=["image", "gt_mask"],
+                                 overlay_fields=[("image", ["anomaly_map"]), ("image", ["pred_mask"])],
+                                 field_size=(256,256),
+                                 fields_config=DEFAULT_FIELDS_CONFIG,
+                                 overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
+                                 text_config=DEFAULT_TEXT_CONFIG)
+    # visualizer = True
+    postProcessor = PostProcessor(enable_normalization=True,
+                                  enable_threshold_matching=True,
+                                  enable_thresholding=True,
+                                  image_sensitivity=0.01,
+                                  pixel_sensitivity=0.01)
+    #postProcessor = True
+    val_metrics, test_metrics = define_metrics()
+    
+    evaluator = Evaluator(val_metrics=val_metrics, test_metrics=test_metrics)
+    
+    engine = Engine(
+        max_epochs=max_epochs,
+        default_root_dir='results_training',
+        callbacks=list(callbacks),
+        logger=tblogger,
+        accelerator="auto",
+        devices=1,
+        log_every_n_steps=10
+    )
+    
+    # 3. Setup Datamodule
+    logger.info(f"Creating datamodule for dataset {dataset} and category {category}")
+    datamodule = create_datamodule(dataset, category, train_batch_size, eval_batch_size, num_workers, test_split_mode, test_split_ratio, val_split_mode, val_split_ratio)
+    
+    # 4. Setup model
+    logger.info(f"Creating model {modelName} for dataset {dataset} and category {category}")
+    model = create_model(modelName, preProcessor, postProcessor, visualizer, evaluator)
+
+    # 5. Train the model
+    logger.info("Starting training...")
+    engine.fit(datamodule=datamodule, model=model)
+    
+    resultsPath = engine._cache.args["default_root_dir"]
+    
+    # 6. Validate on validation set. adjust thresholds
+    logger.info("Validating on validation set...")
+    runValidation = 'Yes' if engine._should_run_validation(engine.model, None) else 'No'
+    
+    logger.log(f"Should we run validation: {runValidation}")
+    
+    if engine._should_run_validation(engine.model, None):
+        engine.validate(
+            model=model,
+            datamodule=datamodule,
+            # ckpt_path=checkpointPath
+        )
+
+    # 7. Test on test set
+    logger.info("Testing on test set...")
+    res = engine.test(
+        model=model,
+        datamodule=datamodule,
+        # ckpt_path=checkpointPath
+    )
+    
+    # Log throughput and time taken for testing
+    takenTime = time.time() - callbacks["timer"].start
+    throughput = callbacks["timer"].num_images / takenTime
+    logger.info(f"Testing took {takenTime:.0f} seconds")
+    logger.info(f"Throughput (batchSize = {eval_batch_size}): {throughput:.2f} images/second")
+    
+    # 8. Predict on test set
+    logger.info("Predicting on test set...")
+    predictions = engine.predict(
+        model=model,
+        datamodule=datamodule,
+        # ckpt_path=checkpointPath
+    )
+    
+    # 9. Calculate confusion matrix and other metrics
+    logger.info("Calculating confusion matrix and other metrics...")
+    confusionMatrix, trueAnomalies, predLabels = createConfusionMatrixDisplay(predictions, datamodule)
+    
+    logConfusionMatrix(logger, tblogger, confusionMatrix, trueAnomalies, predLabels)
+    
+    logMetrics(tblogger, res, confusionMatrix, takenTime, throughput)        
+    with open(os.path.join(tblogger.log_dir, "train_results.yaml"), "w") as file:
         yaml.dump(res, file, default_flow_style=False)
             
-    print("Finished")
+    logger.info("Finished")
 
     # engine.export(model)
 
