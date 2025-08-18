@@ -1,10 +1,10 @@
 import os
+import sys
 import logging
-from anomalib.metrics import F1Score, AUPR, AUROC
+from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder
 from anomalib.models import EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
-from anomalib.visualization import ImageVisualizer
 from anomalib.loggers import AnomalibTensorBoardLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
 
@@ -14,7 +14,8 @@ def define_metrics():
     pixel_auroc = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
     image_aupr = AUPR(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_aupr = AUPR(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
-    val_metrics = [image_auroc, pixel_auroc, image_aupr, pixel_aupr]
+    image_f1score = F1AdaptiveThreshold(fields=["pred_score", "gt_label"], prefix="image_")
+    val_metrics = [image_auroc, pixel_auroc, image_aupr, pixel_aupr, image_f1score]
 
     # test_metrics
     image_auroc = AUROC(fields=["pred_score", "gt_label"], prefix="image_")
@@ -166,14 +167,12 @@ def create_model(modelName, preProcessor, postProcessor, visualizer, evaluator):
 
 from typing import Tuple, Dict, Any
 
-def setupTensorboardLoggingAndCallbacks(version: int, modelName: str, dataset: str, category: str) -> Tuple[AnomalibTensorBoardLogger, Dict[str, Any]]:
-    logAndResultsDir = "logs"
-    runName = f"{modelName}-{dataset}-{category}"
-    checkpointDir = os.path.join(logAndResultsDir, runName, f"version_{version}", "checkpoints")
+def setupTensorboardLoggingAndCallbacks(logDir, runName, versionName, version) -> Tuple[AnomalibTensorBoardLogger, Dict[str, Any]]:
+    checkpointDir = os.path.join(logDir, runName, versionName, "checkpoints")
     checkpointCallback = ModelCheckpoint(
         dirpath=checkpointDir,
         filename="best",
-        monitor="train_loss",  # val_loss not found?
+        monitor="image_F1AdaptiveThreshold",  # val_loss not found?
         verbose=True,
         save_top_k=1,  # Save only the best model
         mode="min",  # Save the model with the minimum training loss
@@ -193,22 +192,28 @@ def setupTensorboardLoggingAndCallbacks(version: int, modelName: str, dataset: s
     }
     
     tblogger = AnomalibTensorBoardLogger(
-        save_dir=logAndResultsDir,
+        save_dir=logDir,
         name=runName,
         version=version)
     
     return tblogger, callbacks, os.path.join(checkpointDir, "best.pt")
 
-def setupLogging(version, modelName, dataset, category):
-    if not os.path.exists("logs"):
-        os.makedirs("logs")
+def setupLogging(logDir, runName, versionName):
+    import datetime
+    
+    now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_filename = f"{now}.log"
+    logDir = os.path.join("logs", runName, versionName)
+
     logger = logging.getLogger("Trainer")
     logger.setLevel(logging.INFO)
     log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler = logging.FileHandler(os.path.join("logs", f"{modelName}-{dataset}-{category}-v{version}.log"))
+    file_handler = logging.FileHandler(os.path.join(logDir, log_filename))
     file_handler.setFormatter(log_formatter)
     logger.addHandler(file_handler)
-    console_handler = logging.StreamHandler()
+    # Create a StreamHandler to duplicate console output to the logger
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(log_formatter)
     logger.addHandler(console_handler)
     return logger

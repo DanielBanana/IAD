@@ -4,7 +4,7 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
 
 
-def createConfusionMatrixDisplay(predictions, datamodule):
+def createConfusionMatrixDisplay(logger, predictions, datamodule):
     itemIdx = 0
     trueAnomalies = []
     predLabels = []
@@ -19,7 +19,10 @@ def createConfusionMatrixDisplay(predictions, datamodule):
                 predLabels.append(predLabel)
                 itemIdx+=1
                 pred_score = prediction.pred_score  # Image-level anomaly score
-                print(f"Anomaly score: {pred_score}")
+                
+                pred = "Anomaly" if predLabel else "Normal"
+                true = "Anomaly" if trueAnomaly else "Normal"
+                logger.info(f"Predicted label: {pred}, True label: {true}, Anomaly score: {pred_score:1.2f}, Image path: {image_path}")
     trueAnomalies = np.asarray(trueAnomalies)
     predLabels = np.asarray(predLabels)
     confusionMatrix = confusion_matrix(trueAnomalies, predLabels)
