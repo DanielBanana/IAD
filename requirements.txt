@@ -9,7 +9,6 @@ alabaster==1.0.0
 alembic==1.15.2
 alive-progress==3.2.0
 annotated-types==0.7.0
--e git+https://github.com/DanielBanana/IAD.git@a9f80878417361a6739b739f1f4af3233989101c#egg=anomalib&subdirectory=anomalib
 antlr4-python3-runtime==4.9.3
 anyio==4.9.0
 argon2-cffi==23.1.0
