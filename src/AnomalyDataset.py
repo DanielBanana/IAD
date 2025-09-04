@@ -5,6 +5,8 @@ import logging
 import os
 import random
 
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
 from bson import json_util
 from mongoengine.base import get_document
 import pydash
@@ -15,6 +17,7 @@ import eta.core.serial as etas
 import eta.core.utils as etau
 import eta.core.video as etav
 
+import fiftyone as fo
 import fiftyone.core.annotation as foa
 import fiftyone.core.brain as fob
 import fiftyone.core.dataset as fod
@@ -41,7 +44,7 @@ import fiftyone.types as fot
 # )
 
 from fiftyone.utils.data.importers import LabeledImageDatasetImporter
-from fiftyone.utils.data.exporters import LabeledImageDatasetExporter
+from fiftyone.utils.data.exporters import LabeledImageDatasetExporter, GenericSampleDatasetExporter
 
 
 logger = logging.getLogger(__name__)
@@ -106,7 +109,7 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
         return self._num_samples
 
     def __next__(self):
-        paths, split, anomalyType = next(self._iter_samples)
+        paths, category, split, anomalyType = next(self._iter_samples)
 
         if self.compute_metadata:
             image_metadata = fom.ImageMetadata.build_for(paths["image"])
@@ -114,8 +117,10 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
             image_metadata = None
         if anomalyType is not None:
             anomalyType = fol.Classification(label=anomalyType)
+        if category is not None:
+            category = fol.Classification(label=category)
 
-        return paths, image_metadata, split, anomalyType
+        return paths, image_metadata, category, split, anomalyType
 
     @property
     def has_image_metadata(self):
@@ -132,16 +137,17 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
     def setup(self):
         samples = []
         classes = set()
+        categories = set()
         whitelist = set(self.classes) if self.classes is not None else None
         for relpath in etau.list_files(self.dataset_dir, recursive=True):
-            chunks = relpath.split(os.path.sep, 1)
+            chunks = relpath.split(os.path.sep, 3)
 
             paths = {}
 
-            if len(chunks) == 1:
+            if len(chunks) <= 3:
                 continue
 
-            split, anomalyType, file = relpath.split(os.path.sep, 2)
+            category, split, anomalyType, file = relpath.split(os.path.sep, 3)
 
             if anomalyType.startswith("."):
                 continue
@@ -152,7 +158,7 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
             if split == "test":
                 # Look for ground truth segmentation masks
                 nr, ext = file.split(".")
-                gtPath = os.path.join("ground_truth", anomalyType, nr + "_mask." + ext)
+                gtPath = os.path.join(category, "ground_truth", anomalyType, nr + "_mask." + ext)
                 gtPath = os.path.join(self.dataset_dir, gtPath)
                 if os.path.exists(gtPath):
                     paths["ground_truth"] = gtPath                
@@ -163,7 +169,9 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
             else:
                 classes.add(anomalyType)
 
-            samples.append((paths, split, anomalyType))
+            categories.add(category)
+
+            samples.append((paths, category, split, anomalyType))
 
         samples = self._preprocess_list(samples)
 
@@ -173,6 +181,7 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
             classes = sorted(classes)
 
         self._classes = classes
+        self._categories = sorted(categories)
         self._samples = samples
         self._num_samples = len(samples)
             
@@ -232,65 +241,19 @@ import fiftyone as fo
 import fiftyone.utils.data as foud
 
 
-class AnomalyImageTreeExporter(LabeledImageDatasetExporter):
-    """Exporter for image classification datasets whose labels and image
-    metadata are stored on disk in a CSV file.
+class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
+    """Interface for exporting datasets of arbitrary
+    :class:`fiftyone.core.sample.Sample` instances.
 
-    Datasets of this type are exported in the following format:
-
-        <dataset_dir>/
-            data/
-                <filename1>.<ext>
-                <filename2>.<ext>
-                ...
-            labels.csv
-
-    where ``labels.csv`` is a CSV file in the following format::
-
-        filepath,size_bytes,mime_type,width,height,num_channels,label
-        <filepath>,<size_bytes>,<mime_type>,<width>,<height>,<num_channels>,<label>
-        <filepath>,<size_bytes>,<mime_type>,<width>,<height>,<num_channels>,<label>
-        ...
+    See :ref:`this page <writing-a-custom-dataset-exporter>` for information
+    about implementing/using dataset exporters.
 
     Args:
-        export_dir: the directory to write the export
+        export_dir (None): the directory to write the export. This may be
+            optional for some exporters
     """
-
-    def __init__(self, export_dir):
-        super().__init__(export_dir=export_dir)
-        self._data_dir = None
-        self._labels = None
-        self._labels_path = None
-        self._image_exporter = None
-
-    @property
-    def requires_image_metadata(self):
-        """Whether this exporter requires
-        :class:`fiftyone.core.metadata.ImageMetadata` instances for each sample
-        being exported.
-        """
-        return True
-
-    @property
-    def label_cls(self):
-        """The :class:`fiftyone.core.labels.Label` class(es) exported by this
-        exporter.
-
-        This can be any of the following:
-
-        -   a :class:`fiftyone.core.labels.Label` class. In this case, the
-            exporter directly exports labels of this type
-        -   a list or tuple of :class:`fiftyone.core.labels.Label` classes. In
-            this case, the exporter can export a single label field of any of
-            these types
-        -   a dict mapping keys to :class:`fiftyone.core.labels.Label` classes.
-            In this case, the exporter can handle label dictionaries with
-            value-types specified by this dictionary. Not all keys need be
-            present in the exported label dicts
-        -   ``None``. In this case, the exporter makes no guarantees about the
-            labels that it can export
-        """
-        return fo.Classification
+    def __init__(self, export_dir=None):
+        super().__init__(export_dir)
 
     def setup(self):
         """Performs any necessary setup before exporting the first sample in
@@ -299,9 +262,9 @@ class AnomalyImageTreeExporter(LabeledImageDatasetExporter):
         This method is called when the exporter's context manager interface is
         entered, :func:`DatasetExporter.__enter__`.
         """
-        self._data_dir = os.path.join(self.export_dir, "data")
+        self._data_dir = self.export_dir
         self._labels_path = os.path.join(self.export_dir, "labels.csv")
-        self._labels = []
+        self._labels = [] 
 
         # The `ImageExporter` utility class provides an `export()` method
         # that exports images to an output directory with automatic handling
@@ -311,22 +274,24 @@ class AnomalyImageTreeExporter(LabeledImageDatasetExporter):
         )
         self._image_exporter.setup()
 
-    def export_sample(self, image_or_path, label, metadata=None):
+    def export_sample(self, sample):
         """Exports the given sample to the dataset.
 
         Args:
-            image_or_path: an image or the path to the image on disk
-            label: an instance of :meth:`label_cls`, or a dictionary mapping
-                field names to :class:`fiftyone.core.labels.Label` instances,
-                or ``None`` if the sample is unlabeled
-            metadata (None): a :class:`fiftyone.core.metadata.ImageMetadata`
-                instance for the sample. Only required when
-                :meth:`requires_image_metadata` is ``True``
+            sample: a :class:`fiftyone.core.sample.Sample`
         """
-        out_image_path, _ = self._image_exporter.export(image_or_path)
+        file = sample.filepath.split(os.path.sep)[-1]
+        
+        category =sample["category"].label
+        anomalyType = sample["anomalyType"].label
 
-        if metadata is None:
-            metadata = fo.ImageMetadata.build_for(image_or_path)
+        outpath = os.path.join(self._data_dir, category, anomalyType, file)
+        out_image_path, _ = self._image_exporter.export(sample.filepath, outpath=outpath)
+
+        if sample.metadata is None:
+            metadata = fo.ImageMetadata.build_for(sample.filepath)
+        else:
+            metadata = sample.metadata
 
         self._labels.append((
             out_image_path,
@@ -335,10 +300,11 @@ class AnomalyImageTreeExporter(LabeledImageDatasetExporter):
             metadata.width,
             metadata.height,
             metadata.num_channels,
-            split,
-            label.label,  # here, `label` is a `Classification` instance  
-        ))
-
+            category,
+            anomalyType,
+            sample.tags[0]
+            ))
+        
     def close(self, *args):
         """Performs any necessary actions after the last sample has been
         exported.
@@ -364,8 +330,9 @@ class AnomalyImageTreeExporter(LabeledImageDatasetExporter):
                 "width",
                 "height",
                 "num_channels",
-                "split",
-                "label"                
+                "category",
+                "anomalyType",
+                "split"                
             ])
             for row in self._labels:
                 writer.writerow(row)
@@ -379,43 +346,45 @@ def _to_list(arg):
 
     return [arg]
 
-import fiftyone as fo
+def importAnomalyDataset(dataset, importer):
+    with importer:
+        for paths, image_metadata, category, split, anomalyType in importer:
+            sample = fo.Sample(filepath=paths["image"], metadata=image_metadata, tags=[split])
 
-importer = AnomalyImageTreeImporter(
-    dataset_dir="datasets/MVTecAD/bottle",
-    compute_metadata=True,
-    classes=None,
-    unlabeled="_unlabeled",
-    shuffle=False,
-    seed=None,
-    max_samples=None,
-)
+            sample["anomalyType"] = anomalyType
+            sample["category"] = category
+            if paths.get("ground_truth", None) is not None:
+                sample["ground_truth"] = fol.Segmentation(mask_path=paths["ground_truth"])
 
-dataset = fod.Dataset(name="bottle", overwrite=True)
+            dataset.add_sample(sample)
 
-split_field = "split"
-anomalyType_field = "anomalyType"
+        if importer.has_dataset_info:
+            info = importer.get_dataset_info()
+            # parse_info(dataset, info)
+    return dataset, info
 
-with importer:
-    for paths, image_metadata, split, anomalyType in importer:
-        sample = fo.Sample(filepath=paths["image"], metadata=image_metadata, tags=[split])
+if __name__ == "__main__":
 
-        sample[anomalyType_field] = anomalyType
-        if paths.get("ground_truth", None) is not None:
-            sample["ground_truth"] = fol.Segmentation(mask_path=paths["ground_truth"])
+    importer = AnomalyImageTreeImporter(
+        dataset_dir="datasets/MVTecAD",
+        compute_metadata=True,
+        classes=None,
+        unlabeled="_unlabeled",
+        shuffle=False,
+        seed=None,
+        max_samples=None,
+    )
 
-        dataset.add_sample(sample)
+    dataset = fod.Dataset(name="MVTec", overwrite=True)
+    #dataset = fod.load_dataset("MVTec")
 
-    if importer.has_dataset_info:
-        info = importer.get_dataset_info()
-        # parse_info(dataset, info)
+    dataset, info = importAnomalyDataset(dataset, importer)
 
-samples = dataset.limit(10)
+    samples = dataset.limit(10)
 
-exporter = AnomalyImageTreeExporter(export_dir="datasets/MVTecAD_export/bottle")
-samples.export(dataset_exporter=exporter)
-#dataset.persistent = True
+    exporter = AnomalyImageTreeExporter(export_dir="datasets/MVTecAD_export")
+    samples.export(dataset_exporter=exporter)
 
-session = fo.launch_app(dataset)
+    session = fo.launch_app(dataset)
 
-session.wait()
+    session.wait()
