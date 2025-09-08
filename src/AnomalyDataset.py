@@ -184,41 +184,6 @@ class AnomalyImageTreeImporter(LabeledImageDatasetImporter):
         self._categories = sorted(categories)
         self._samples = samples
         self._num_samples = len(samples)
-            
-        # samples = []
-        # classes = set()
-        # whitelist = set(self.classes) if self.classes is not None else None
-
-        # for relpath in etau.list_files(self.dataset_dir, recursive=True):
-        #     chunks = relpath.split(os.path.sep, 1)
-        #     if len(chunks) == 1:
-        #         continue
-
-        #     label = chunks[0]
-        #     if label.startswith("."):
-        #         continue
-
-        #     if whitelist is not None and label not in whitelist:
-        #         continue
-
-        #     if label == self.unlabeled:
-        #         label = None
-        #     else:
-        #         classes.add(label)
-
-        #     path = os.path.join(self.dataset_dir, relpath)
-        #     samples.append((path, label))
-
-        # samples = self._preprocess_list(samples)
-
-        # if whitelist is not None:
-        #     classes = self.classes
-        # else:
-        #     classes = sorted(classes)
-
-        # self._classes = classes
-        # self._samples = samples
-        # self._num_samples = len(samples)
 
     def get_dataset_info(self):
         return {"classes": self._classes}
@@ -353,6 +318,7 @@ def importAnomalyDataset(dataset, importer):
 
             sample["anomalyType"] = anomalyType
             sample["category"] = category
+            sample["split"] = split
             if paths.get("ground_truth", None) is not None:
                 sample["ground_truth"] = fol.Segmentation(mask_path=paths["ground_truth"])
 
