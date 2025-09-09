@@ -72,7 +72,6 @@ if __name__ == "__main__":
     
     logger = setupLogging(version, modelName, dataset, category)
 
-    
     if dataset in DATASETS:
         logger.info(f"Dataset {dataset} found!")
         if dataset == "kolektor":

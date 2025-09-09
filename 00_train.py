@@ -84,9 +84,6 @@ if __name__ == "__main__":
     val_split_mode = "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
     val_split_ratio = 0.5 # not used if same_as_text
 
-    
-
-    
     # 2. Setup Dataprocessing
     logger.info(f"Setting up pre-processing for model {modelName}")
     preProcessor = True
