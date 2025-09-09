@@ -1,4 +1,5 @@
 import fiftyone as fo # base library and app
+import fiftyone.types as fot
 import fiftyone.brain as fob # ML methods
 import fiftyone.zoo as foz # zoo datasets and models
 from fiftyone import ViewField as F # helper for defining views
@@ -168,6 +169,9 @@ if __name__ == "__main__":
     #dataset = fod.load_dataset("MVTec")
 
     dataset, info = importAnomalyDataset(dataset, importer)
+    # dataset = fo.Dataset.from_dir(dataset_dir="datasets/MVTecAD",
+    #                               dataset_type=fot.ImageClassificationDirectoryTree,
+    #                               name="MVTec")
 
     # 2. Explore the dataset using the App
     session = fo.launch_app(dataset)
