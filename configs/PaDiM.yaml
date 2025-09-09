@@ -1,0 +1,10 @@
+# Model configuration
+backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
+layers: ["layer1", "layer2", "layer3"]
+pre_trained: true
+n_features: 100  # Default for resnet18
+
+# Non-primitive types: reference other YAML files
+pre_processor: "configs/PreProcessor.yaml"  # or set to false to disable
+post_processor: "configs/PostProcessor.yaml"  # or set to false to disable
+evaluator: "configs/Evaluator.yaml"  # or set to false to disable

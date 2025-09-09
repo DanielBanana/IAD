@@ -1,0 +1,5 @@
+enable_normalization: True
+enable_threshold_matching: True
+enable_thresholding: True
+image_sensitivity: 0.01
+pixel_sensitivity: 0.01
