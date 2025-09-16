@@ -19,3 +19,11 @@ lightning_logs
 res__
 
 wandb
+
+__pychache__
+
+db
+
+models
+
+results_training
