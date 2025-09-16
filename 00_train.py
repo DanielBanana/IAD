@@ -13,7 +13,7 @@ from anomalib.visualization import ImageVisualizer
 from anomalib.data.datasets.image.mvtecad import CATEGORIES
 
 
-from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from src.settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, define_metrics
 from results import createConfusionMatrixDisplay, logConfusionMatrix, logMetrics
 

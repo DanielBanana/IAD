@@ -37,7 +37,7 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 from torchvision.transforms import Compose, Normalize, Resize
 
-from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from src.settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, define_metrics
 from results import createConfusionMatrixDisplay, logConfusionMatrix, logMetrics
 
