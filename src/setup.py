@@ -3,10 +3,11 @@ import sys
 import logging
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder
-from anomalib.models import EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
+from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
 from anomalib.loggers import AnomalibTensorBoardLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
+from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 
 def define_metrics():
     # val metrics (needed for early stopping)
@@ -107,62 +108,33 @@ def create_datamodule(dataset, category, train_batch_size, eval_batch_size, num_
         
     return datamodule
 
-def create_model(modelName, preProcessor, postProcessor, visualizer, evaluator):
+def create_model(modelName, modelConfig):
     if modelName == "efficientad-s":
         # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
-        model = EfficientAd(pre_processor=preProcessor,
-                            post_processor=postProcessor,
-                            visualizer=visualizer,
-                            evaluator=evaluator,
-                            model_size="small")
+        model = EfficientAd(**modelConfig)
     elif modelName == "efficientad-m":
-        model = EfficientAd(pre_processor=preProcessor,
-                            post_processor=postProcessor,
-                            visualizer=visualizer,
-                            evaluator=evaluator,
-                            model_size="medium")
+        model = EfficientAd(**modelConfig)
     elif modelName == "dsr":
-        model = Dsr(pre_processor=preProcessor,
-                    post_processor=postProcessor,
-                    visualizer=visualizer,
-                    evaluator=evaluator)
+        model = Dsr(**modelConfig)
     elif modelName == "reversedistillation":
-        model = ReverseDistillation(pre_processor=preProcessor,
-                                    post_processor=postProcessor,
-                                    visualizer=visualizer,
-                                    evaluator=evaluator)
+        model = ReverseDistillation(**modelConfig)
     elif modelName == "reverse_distillation":
-        model = ReverseDistillation(pre_processor=preProcessor,
-                                    post_processor=postProcessor,
-                                    visualizer=visualizer,
-                                    evaluator=evaluator)
+        model = ReverseDistillation(**modelConfig)
     elif modelName == "rd":
-        model = ReverseDistillation(pre_processor=preProcessor,
-                                    post_processor=postProcessor,
-                                    visualizer=visualizer,
-                                    evaluator=evaluator)
+        model = ReverseDistillation(**modelConfig)
     elif modelName == "stfpm":
-        model = Stfpm(pre_processor=preProcessor,
-                      post_processor=postProcessor,
-                      visualizer=visualizer,
-                      evaluator=evaluator)
+        model = Stfpm(**modelConfig)
     elif modelName == "fastflow":
-        model = Fastflow(pre_processor=preProcessor,
-                         post_processor=postProcessor,
-                         visualizer=visualizer,
-                         evaluator=evaluator)
+        model = Fastflow(**modelConfig)
     elif modelName == "fast_flow":
-        model = Fastflow(pre_processor=preProcessor,
-                         post_processor=postProcessor,
-                         visualizer=visualizer,
-                         evaluator=evaluator)
+        model = Fastflow(**modelConfig)
     elif modelName == "patchcore":
-        model = Patchcore(pre_processor=preProcessor,
-                          post_processor=postProcessor,
-                          visualizer=visualizer,
-                          evaluator=evaluator)
-        
-        
+        model = Patchcore(**modelConfig)
+    elif modelName == "PaDiM":
+        model = Padim(**modelConfig)
+    else:
+        print(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
+        model = None
     return model
 
 from typing import Tuple, Dict, Any
