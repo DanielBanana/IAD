@@ -1,4 +1,5 @@
 # Model configuration
+model: "PaDiM" # For referencing in logs, saved models, etc.
 backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
 layers: ["layer1", "layer2", "layer3"]
 pre_trained: true
