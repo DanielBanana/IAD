@@ -567,6 +567,7 @@ class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
     """
     def __init__(self, export_dir=None):
         super().__init__(export_dir)
+        self.setup()
 
     def setup(self):
         """Performs any necessary setup before exporting the first sample in
@@ -597,8 +598,9 @@ class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
         
         category = sample["category"].label
         anomalyType = sample["anomalyType"].label
+        split = sample["split"]
 
-        outpath = os.path.join(self._data_dir, category, anomalyType, file)
+        outpath = os.path.join(self._data_dir, category, split, anomalyType, file)
         out_image_path, _ = self._image_exporter.export(sample.filepath, outpath=outpath)
 
         if sample.metadata is None:
@@ -614,8 +616,9 @@ class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
             metadata.height,
             metadata.num_channels,
             category,
+            split,
             anomalyType,
-            sample.tags[0]
+            #sample.tags[0]
             ))
         
     def close(self, *args):
@@ -1042,6 +1045,13 @@ def _to_list(arg):
         return list(arg)
 
     return [arg]
+
+def exportDataset(dataset, path, overwrite=True):
+    exporter = AnomalyImageTreeExporter(path)
+    for sample in dataset:
+        exporter.export_sample(sample)
+    exporter.close()
+
 
 def importDataset(path, name, overwrite=True, split: Union[str, Tuple[str, str], Tuple[str]] = ("train", "test")):
     """For importing training and/or test datasets. Not meant for unknown data which should be predicted on. Use

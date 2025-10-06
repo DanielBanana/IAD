@@ -18,7 +18,7 @@ from anomalib.deploy import ExportType
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
-from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset
+from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
 from Setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, define_metrics, LoggerWriter, LoggerStdin
 from Configs import load_config
 from Visualisation import clipEmbedding, resnetEmbedding
@@ -145,6 +145,12 @@ def main():
     print("Welcome to the ML Model CLI!")
 
     firstTime = True
+    
+    session = {"model": None,
+               "modelConfig": None,
+               "modelName": None,
+               "dataset": None,
+               "datasetPath": None,}
 
     while True:
         if firstTime:
@@ -158,8 +164,9 @@ def main():
             print("7. Replace current dataset with a new dataset")
             print("8. Add pred dataset")
             print("9. Inference on current dataset")
-            print("10. Enter continuous folder mode")
-            print("11. Enter camera mode")
+            print("10. Save dataset to disk")
+            print("11. Enter continuous folder mode")
+            print("12. Enter camera mode")
             print("q. Exit")
         else:
             with exclude_from_logger():
@@ -173,8 +180,9 @@ def main():
                 print("7. Replace current dataset with a new dataset")
                 print("8. Add pred dataset")
                 print("9. Inference on current dataset")
-                print("10. Enter continuous folder mode")
-                print("11. Enter camera mode")
+                print("10. Save dataset to disk")
+                print("11. Enter continuous folder mode")
+                print("12. Enter camera mode")
                 print("q. Exit")
         firstTime = False
 
@@ -378,11 +386,16 @@ def main():
             session = fo.launch_app(split_view)
 
         elif menu_choice == "10":
+            print("Exporting...")
+            name = input("Dataset name:\n")
+            exportDataset(dataset=dataset, path=os.path.join("datasets", name))
+
+        elif menu_choice == "11":
             print("Entering continuous folder mode. In this mode the program continuously observes a folder of choice. For each image a prediction is made and the result saved.")
             print("After the processing of an image it is moved to another folder of choice such that it is not processed again.")
             obsDir = input("Which folder should be observed: ")
 
-        elif menu_choice == "11":
+        elif menu_choice == "12":
             print("Entering continuous camera mode. In this mode a connected camera is used for a continuous camera feed. After it gets the signal to take a picture it process it with the AD model.")
             folder = input("Please enter a name for the folder in datasets where the images should be saved.\n")
             if folder == "":
