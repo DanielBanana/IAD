@@ -249,7 +249,7 @@ class TrainTestDataImporter(LabeledImageDatasetImporter):
         compute_metadata=False,
         classes=None,
         blacklist=["ground_truth"],
-        unknown="_unknown",
+        # unknown="_unknown",
         shuffle=False,
         seed=None,
         max_samples=None,
@@ -265,7 +265,7 @@ class TrainTestDataImporter(LabeledImageDatasetImporter):
 
         self.compute_metadata = compute_metadata
         self.classes = classes
-        self.unknown = unknown
+        self.unknown = "unknown"
         self.blacklist = blacklist
 
         self._classes = None
@@ -336,17 +336,23 @@ class TrainTestDataImporter(LabeledImageDatasetImporter):
             if len(chunks) <= 2:
                 continue
 
-            category, split, anomalyType, file = relpath.split(os.path.sep)
+            if len(chunks) == 3:
+                # Prediction case, there is no label like good or anomaly because we do not know
+                category, split, file = relpath.split(os.path.sep)
+                anomalyType = "unknown"
 
-            if anomalyType.startswith("."):
-                continue
-            if whitelist is not None and anomalyType not in whitelist:
-                continue
+            if len(chunks) == 4:
+                # Normal case
+                category, split, anomalyType, file = relpath.split(os.path.sep)
+                if anomalyType.startswith("."):
+                    continue
+                if whitelist is not None and anomalyType not in whitelist:
+                    continue
 
             if split == "test":
                 # Look for ground truth segmentation masks
                 nr, ext = file.split(".")
-                gtPath = os.path.join("ground_truth", anomalyType, nr + "_mask." + ext)
+                gtPath = os.path.join(category, "ground_truth", anomalyType, nr + "_mask." + ext)
                 gtPath = os.path.join(self.dataset_dir, gtPath)
                 if os.path.exists(gtPath):
                     paths["ground_truth"] = gtPath
@@ -969,6 +975,8 @@ def make_fiftyone_dataset(
             raise ValueError(msg)
         else:
             sample["image_path"] = sample.filepath
+        if sample.mask_path != "":
+            sample["mask_path"] = sample.mask_path
         # if sample.tags;
         if sample.get_field_schema().get("label_index", None) is None:
             msg = "The samples must each contain a 'label_index' field. Either 0:('normal'), 1:('abnormal') or -1('unknown')."
@@ -1056,7 +1064,6 @@ def importDataset(path, name, overwrite=True, split: Union[str, Tuple[str, str],
             dataset_dir=path,
             compute_metadata=True,
             classes=None,
-            unknown="_unknown",
             shuffle=False,
             seed=None,
             max_samples=None,
@@ -1067,13 +1074,14 @@ def importDataset(path, name, overwrite=True, split: Union[str, Tuple[str, str],
             dataset_dir=path,
             compute_metadata=True,
             classes=None,
-            unknown="_unknown",
             shuffle=False,
             seed=None,
             max_samples=None,
         )
     elif "train" in split and "test" not in split:
         return loadTrainingDataFolder(path, name)
+    elif "pred" in split:
+        return loadPredictDataset(path, name)
     else:
         raise ValueError("split must be 'train', 'test' or ('train', 'test')")
 
@@ -1121,8 +1129,8 @@ def loadTrainingDataFolder(path, name):
     info = None
     return dataset, info
 
-def loadPredictDataset(path, name="prediction", transform=None, imageSize=(256,256)):
-    split = "prediction"
+def loadPredictDataset(path, name="pred", transform=None, imageSize=(256,256)):
+    split = "pred"
     dataset = fo.Dataset.from_dir(
         dataset_dir=path,
         dataset_type=fot.ImageDirectory,
@@ -1131,10 +1139,12 @@ def loadPredictDataset(path, name="prediction", transform=None, imageSize=(256,2
     for sample in dataset:
         sample["split"] = split
         sample["label_index"] = LabelName.UNKNOWN
-        sample["anomalyType"] = "_unknown"
-        sample["category"] = os.path.split(path)[-1]
+        sample["anomalyType"] = fol.Classification(label="unknown")
+        sample["category"] = fol.Classification(label=sample.filepath.split(os.sep)[-2])
         sample["mask_path"] = ""
+        sample.tags.append("pred")
         sample.save()
+    dataset.tags.append("pred")    
     info = None
     return dataset, info
 
