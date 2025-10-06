@@ -1,6 +1,7 @@
 import fiftyone as fo # base library and app
 from fiftyone import ViewField as F # helper for defining views
 import numpy as np
+import os
 
 from pathlib import Path
 from PIL import Image
@@ -23,23 +24,27 @@ DATAMODULE_PARAMS = ["train_batch_size",
                    "test_split_ratio",
                    "seed"]
 
-def train_and_export_model(rootDir, dataset, model, transform=None, callbacks=None, logger=None, trainingConfig={}):
+def train_and_export_model(rootDir, dataset, model, transform=None, callbacks=None, logger=None, trainingConfig={}, ckptPath=None):
     engineParams = {key: trainingConfig[key] for key in ENGINE_PARAMS if key in trainingConfig}
     datamoduleParams = {key: trainingConfig[key] for key in DATAMODULE_PARAMS if key in trainingConfig}
 
-    engine = Engine(callbacks, logger, **engineParams)
+    engine = Engine(callbacks=list(callbacks.values()), logger=logger, **engineParams)
     datamodule = FODataModule(name="Train", samples=dataset, root=rootDir, **datamoduleParams)
     datamodule.setup()
     engine.fit(model=model, datamodule=datamodule)
 
-    engine.export(
-        model=model,
-        export_type=ExportType.TORCH,
-    )
+    # engine.export(
+    #     model=model,
+    #     export_type=ExportType.TORCH,
+    # )
+    engine.export(model=model,
+                  export_type=ExportType.TORCH,
+                  export_root=rootDir,
+                  model_file_name="model")
     output_path = Path(engine.trainer.default_root_dir)
 
-    torch_model_path = output_path / "weights" / "torch" / "model.pt"
-    metadata = output_path / "weights" / "openvino" / "metadata.json"
+    torch_model_path = os.path.join(rootDir, "weights", "torch", "model.pt")
+    metadata = os.path.join(rootDir, "metadata.json")
 
     inferencer = TorchInferencer(
         path=torch_model_path,

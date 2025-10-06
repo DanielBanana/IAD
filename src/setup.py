@@ -7,7 +7,9 @@ from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastfl
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
 from anomalib.loggers import AnomalibTensorBoardLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
-from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from Settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+import datetime
+
 
 def define_metrics():
     # val metrics (needed for early stopping)
@@ -130,7 +132,7 @@ def create_model(modelName, modelConfig):
         model = Fastflow(**modelConfig)
     elif modelName == "patchcore":
         model = Patchcore(**modelConfig)
-    elif modelName == "PaDiM":
+    elif modelName == "padim":
         model = Padim(**modelConfig)
     else:
         print(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
@@ -141,6 +143,8 @@ from typing import Tuple, Dict, Any
 
 def setupTensorboardLoggingAndCallbacks(logDir, runName, versionName, version) -> Tuple[AnomalibTensorBoardLogger, Dict[str, Any]]:
     checkpointDir = os.path.join(logDir, runName, versionName, "checkpoints")
+    if not os.path.exists(checkpointDir):
+        os.mkdir(checkpointDir)
     checkpointCallback = ModelCheckpoint(
         dirpath=checkpointDir,
         filename="best",
@@ -170,22 +174,49 @@ def setupTensorboardLoggingAndCallbacks(logDir, runName, versionName, version) -
     
     return tblogger, callbacks, os.path.join(checkpointDir, "best.pt")
 
-def setupLogging(logDir, runName, versionName):
-    import datetime
-    
-    now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_filename = f"{now}.log"
-    logDir = os.path.join("logs", runName, versionName)
+class LoggerWriter:
+    def __init__(self, logger, log_level=logging.INFO):
+        self.logger = logger
+        self.log_level = log_level
+        self.linebuf = ''
 
-    logger = logging.getLogger("Trainer")
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.log_level, line.rstrip())
+
+    def flush(self):
+        pass
+
+class LoggerStdin:
+    def __init__(self, logger, log_level=logging.INFO):
+        self.logger = logger
+        self.log_level = log_level
+        self.builtin_stdin = sys.stdin
+
+    def readline(self):
+        line = self.builtin_stdin.readline()
+        self.logger.log(self.log_level, f"Input: {line.rstrip()}")
+        return line
+
+    def __getattr__(self, attr):
+        return getattr(self.builtin_stdin, attr)
+
+def setupLogging(logDir, runName, versionName):
+    logFileName = f"trainer.log"
+    logDir = os.path.join(logDir, runName, versionName)
+    logger = logging.getLogger("general.trainer")
     logger.setLevel(logging.INFO)
-    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler = logging.FileHandler(os.path.join(logDir, log_filename))
-    file_handler.setFormatter(log_formatter)
-    logger.addHandler(file_handler)
+    # log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fileHandler = logging.FileHandler(os.path.join(logDir, logFileName))
+    fileHandler.setLevel(logging.INFO)
+    logFormater = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fileHandler.setFormatter(logFormater)
+    # file_handler.setFormatter(log_formatter)
+    logger.addHandler(fileHandler)
     # Create a StreamHandler to duplicate console output to the logger
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(log_formatter)
-    logger.addHandler(console_handler)
-    return logger
+    # console_handler = logging.StreamHandler(sys.stdout)
+    # console_handler.setLevel(logging.INFO)
+    # console_handler.setFormatter(log_formatter)
+    # logger.addHandler(console_handler)
+    # sys.stdout = LoggerWriter(logger, logging.INFO)
+    return logger, logDir
