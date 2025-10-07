@@ -57,3 +57,7 @@ Nun kann das Modell mittels Option "4" und "padim_training.yaml" trainiert werde
 
 Nach dem Training sollten die Vorhersagen des Modells im Browser erscheinen.
 
+![menu](docs/menu.png)
+
+![FiftyOne Browser](docs/FO.png)
+
