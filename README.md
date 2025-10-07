@@ -27,7 +27,32 @@ python3 -m venv envName
 pip3 install -r requirements.txt
 ```
     
+Die von Anomalib implementierte Metrik "Adapative F1-Mass" hat in der Implementierung einen Fehler. Daher muss eine Anpassung in der f1_adapative_threshold.py vorgenommen werden. Diese ist unter anomalib/metrics/threshold/f1_adapative_threshold.py zu finden.
+
+Die Zeile 
+```python
+return thresholds if thresholds.dim() == 0 else thresholds[torch.argmax(f1_score)]
+```
+muss zu
+```python
+return thresholds if thresholds.dim() == 0 else thresholds[torch.argmax(f1_score)-1]
+```
+abgeändert werden.
+
+
 ## Verwendung/Beispiele
 
+Das Programm wird mit 
+```python
+python src/main.py 
+```
+gestartet.
 
+Danach kann ein neues Modell mit "1" erstellt werden. Als Konfigurationsdatei kann "padim.yaml" gewählt werden.
+
+Danach kann der verkleinerte MVTecAD Datensatz mittels "6" und "MVTecADShort" geladen werden. Dem Datensatz kann beim Laden ein beliebiger Name zur Wiedererkennung gegeben werden (z.B. "short"). Nach dem Laden des Modells sollte sich ein Browserfenster durch FiftyOne öffnen das den Datensatz visualisiert.
+
+Nun kann das Modell mittels Option "4" und "padim_training.yaml" trainiert werden.
+
+Nach dem Training sollten die Vorhersagen des Modells im Browser erscheinen.
 
