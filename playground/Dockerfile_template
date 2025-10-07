@@ -1,0 +1,23 @@
+FROM pytorch/pytorch
+
+WORKDIR /src
+
+# VOLUME /src
+
+RUN pip install numpy
+RUN pip install snntorch
+RUN pip install scikit-learn
+RUN pip install torchvision
+RUN pip install matplotlib
+RUN pip install tqdm
+
+COPY trainer.py ./trainer.py
+COPY model.py ./model.py
+COPY dataset.py ./dataset.py
+COPY utils.py ./utils.py
+COPY plotting.py ./plotting.py
+COPY lossFunctions.py ./lossFunctions.py
+COPY 15_IMSNN.py ./15_IMSNN.py
+COPY versionDescription.txt ./versionDescription.txt
+
+# RUN python3 train.py

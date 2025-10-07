@@ -1,0 +1,11 @@
+
+services:
+  app:
+    image: iad:latest
+    volumes:
+      - ./results:/src/results
+      - ./res/pre_trained:/src/pre_trained
+      - ./res/datasets:/src/datasets
+    # working_dir: /src
+    # command: /bin/bash -c "chmod +x start.sh && ./start.sh"
+    command: /bin/bash -c "ls"
