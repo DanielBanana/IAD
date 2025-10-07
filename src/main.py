@@ -1,33 +1,40 @@
 import os
-
+import sys
 import yaml
 import fiftyone as fo
 import fiftyone.core.dataset as fod
 import fiftyone.zoo as foz # zoo datasets and models
 import cv2
+import datetime
+import logging
 
+from contextlib import contextmanager
 from fiftyone import ViewField as F # helper for defining views
 from pathlib import Path
 from copy import deepcopy
 from functools import partial
-from contextlib import contextmanager
-
 from anomalib.metrics import Evaluator
+from anomalib.deploy import ExportType
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
-
-from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset
-from Setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, define_metrics
+from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
+from Setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin
 from Configs import load_config
 from Visualisation import clipEmbedding, resnetEmbedding
 from Settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 from Training import run_inference, train_and_export_model
 from CameraProcessor import CameraProcessor
-
 os.environ["TRUST_REMOTE_CODE"] = "1"
 
-
+@contextmanager
+def exclude_from_logger():
+    original_stdout = sys.stdout
+    sys.stdout = sys.__stdout__  # Restore original stdout
+    try:
+        yield
+    finally:
+        sys.stdout = original_stdout  # Restore logger stdout
 
 def select_category(dataset):
     categories = dataset.distinct("category.label")
@@ -50,17 +57,15 @@ def select_category(dataset):
         else:
             break
     print(f"Category set to: {category}")
-    
+
     return category
 
 def parseSplitKeywords(user_input, availableSplits):
-    # List of common split-related keywords
     possibleSplits = {"train", "val", "test", "pred"}
     unavailableSplits = set()
     for pos in possibleSplits:
         if pos not in availableSplits:
             unavailableSplits.add(pos)
-
     split_keywords = {
         'train': 'train',
         'training': 'train',
@@ -72,64 +77,118 @@ def parseSplitKeywords(user_input, availableSplits):
         'prediction': 'pred',
         'pred': 'pred'
     }
-
-    # Keywords indicating "all splits"
     all_keywords = {'all', 'everything', 'all splits'}
-
-    # Normalize input and find matches
     user_input_lower = user_input.lower()
     detected_splits = set()
-
-    # Check if the user wants all splits
     if any(keyword in user_input_lower for keyword in all_keywords):
         return list(availableSplits), list(unavailableSplits), True
-
     unavailableSplits = set()
-    # Check for specific splits
     for keyword in split_keywords:
         if keyword in user_input_lower:
             normalized_split = split_keywords[keyword]
             if normalized_split in availableSplits:
                 detected_splits.add(normalized_split)
             else:
-                unavailableSplits.append(normalized_split)
-
+                unavailableSplits.add(normalized_split)
     return list(detected_splits), list(unavailableSplits), False
 
 def createSplitView(dataset, user_input):
     availableSplits = dataset.distinct("split")
     detected_splits, unavailableSplits, allKeyword = parseSplitKeywords(user_input, availableSplits)
-
     if unavailableSplits:
         print(f"Warning: The following splits are not available in the dataset: {', '.join(unavailableSplits)}")
-
     if not detected_splits:
         print("No valid split keywords detected in the input.")
         return None
-
-    # If "all" is detected, return the entire dataset
     if allKeyword:
         return dataset.view()
-
-    # Otherwise, create a view for the detected splits
     view = dataset.match(
         fo.ViewField("split").is_in(detected_splits)
     )
-
     return view
 
-
-# os.environ["FIFTYONE_DATABASE_URI"]="mongodb://127.0.0.1:6969/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.5.7"
-
 def main():
+    dataset = None
+    datamodule = None
+    model = None
+    inferencer = None
+    engine = None
+    session = None
+    logFileName = "general.log"
+    now = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    logDir = os.path.join("logs", now)
+    outputPath = "results"
+    weightPath = None
+
+    # Create the general logger
+    generalLogger = logging.getLogger('general')
+    generalLogger.setLevel(logging.INFO)
+    logFormater = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Create a file handler for the general logger
+    if not os.path.exists(logDir):
+        os.makedirs(logDir)
+    fileHandler = logging.FileHandler(os.path.join(logDir, logFileName))
+    fileHandler.setLevel(logging.INFO)
+    fileHandler.setFormatter(logFormater)
+    generalLogger.addHandler(fileHandler)
+    # Create a StreamHandler to duplicate console output to the logger
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    generalLogger.addHandler(console_handler)
+    sys.stdout = LoggerWriter(generalLogger, logging.INFO)
+    sys.stdin = LoggerStdin(generalLogger, logging.INFO)
+
+    if not os.path.exists(outputPath):
+        os.makedirs(outputPath)
+
     print("Welcome to the ML Model CLI!")
 
-    # Step 1: Ask user if they want to train a new model or use an existing one
-    choice = input("Do you want to train a new model (1) or use an existing model (2)? [1/2]: ").strip()
+    firstTime = True
+    
+    session = {"model": None,
+               "modelConfig": None,
+               "modelName": None,
+               "dataset": None,
+               "datasetPath": None,}
 
     while True:
-        if choice == "1":
-            # Ask for YAML config file
+        if firstTime:
+            print("\nMenu:")
+            print("1. Generate a new model")
+            print("2. Load a model")
+            print("3. Generate an embedding")
+            print("4. Train the model")
+            print("5. Retrain the model with new training parameters")
+            print("6. Add data to the dataset")
+            print("7. Replace current dataset with a new dataset")
+            print("8. Add pred dataset")
+            print("9. Inference on current dataset")
+            print("10. Save dataset to disk")
+            print("11. Enter continuous folder mode")
+            print("12. Enter camera mode")
+            print("q. Exit")
+        else:
+            with exclude_from_logger():
+                print("\nMenu:")
+                print("1. Generate a new model")
+                print("2. Load a model")
+                print("3. Generate an embedding")
+                print("4. Train the model")
+                print("5. Retrain the model with new training parameters")
+                print("6. Add data to the dataset")
+                print("7. Replace current dataset with a new dataset")
+                print("8. Add pred dataset")
+                print("9. Inference on current dataset")
+                print("10. Save dataset to disk")
+                print("11. Enter continuous folder mode")
+                print("12. Enter camera mode")
+                print("q. Exit")
+        firstTime = False
+
+        menu_choice = input("Enter your choice [1-11]: ").strip()
+
+        if menu_choice == "1":
             configDir = "configs"
             while True:
                 userPath = input("Please provide the path to your YAML config file: ").strip()
@@ -137,7 +196,7 @@ def main():
                 if userPath == "q":
                     break
                 elif userPath == "":
-                    configPath = os.path.join(configDir, "patchcore.yaml")
+                    configPath = os.path.join(configDir, "PaDiM.yaml")
                     break
                 if not os.path.exists(configPath):
                     print("Error: Config file not found.")
@@ -146,90 +205,47 @@ def main():
             if userPath == "q":
                 continue
             else:
-                # modelName = config_path.split("/")[-1].split(".")[0]
-                modelConfig, copypath = load_config(configPath)
+                modelConfig, fullCopyPath = load_config(configPath, copyPath=logDir)
                 modelName = modelConfig.pop("model").lower()
+
                 print(f"Model {modelName} loaded: {modelConfig}")
-                
+                print(f"Model config copied to {fullCopyPath}.")
                 model = create_model(modelName, modelConfig)
+                print(f"Model {model} created.")
 
-                print(f"Model {model} created. ")
-                break
-        elif choice == "2":
-            # Ask for model.pt file
-            model_path = input("Please provide the path to your model.pt file: ").strip()
-            if not os.path.exists(model_path):
+        elif menu_choice == "2":
+            modelPath = input("Please provide the path to your model weights file (model.pt): ").strip()
+            if not os.path.exists(modelPath):
                 print("Error: Model file not found.")
-                return
+                continue
+            else:
+                print(f"Found model weights at {modelPath}")
             model = "existing_model"  # Placeholder for your model loading logic
-        else:
-            print("Invalid choice. Exiting.")
-            return
-    
-    while True:
-        print("Please provide the name of the training data folder in datasets. E.g.: MVTecAD (or type 'q' to quit): ")
-        datasetName = input().strip()
-        if datasetName.lower() == 'q':
-            print("Exiting.")
-            return
-        elif datasetName == "":
-            datasetName = "traintest"
+            print("Model loaded.")
 
-        dataDir = os.path.join("datasets", datasetName)
+        elif menu_choice == "3":
+            print("Creating embedding...")
+            if dataset is None:
+                print("No dataset loaded. Please load or create a dataset first.")
+                continue
+            with exclude_from_logger():
+                clipEmbedding(dataset)
+            print("Finished embedding computation.")
+            print("Please reload the FiftyOne app to see the new visualizations.")
+            print("You find the visualizations by clicking the '+' next to Samples and choosing Embeddings.")
 
-        if not os.path.isdir(dataDir):
-            print(f"Error: Directory {dataDir} not found.")
-        else:
-            print(f"Training data directory set to: {dataDir}")
-            break
-
-    newDatasetName = input("Please provide a name for the dataset (e.g., 'MVTecAD'): ").strip()
-    if newDatasetName != "":
-        datasetName = newDatasetName
-    print(f"Dataset name set to: {datasetName}")
-
-    print("Importing dataset...")
-    dataset, _ = importDataset(
-        path=dataDir,
-        name=datasetName,
-        overwrite=False,
-        split=["train", 'test'],
-    )
-
-    session = fo.launch_app(dataset)
-    exploreData = input("Press 'e' to explore the dataset in the FiftyOne app, or any other key to continue: ").strip()
-    if exploreData.lower() == 'e':    # 3. Explore data
-        clipEmbedding(dataset)
-        print("Finished embedding computation.")
-        print("Please reload the FiftyOne app to see the new visualizations.")
-        print("You find the visualizations by clicking the '+' next to Samples and choosing Embeddings.")
-        # resnetEmbedding(dataset)
-
-    # Step 2: Menu system
-    inferencer = None
-    while True:
-        print("\nMenu:")
-        print("1. Train the model")
-        print("2. Retrain the model with new training parameters")
-        print("3. Add data to the dataset.")
-        print("4. Replace current dataset with a new dataset")
-        print("5. Add pred dataset")
-        print("6. Inference on current dataset")
-        print("7. Enter continuous folder mode")
-        print("8. Enter camera mode")
-        print("q. Exit")
-
-        menu_choice = input("Enter your choice [1-5]: ").strip()
-
-        if menu_choice == "1":
+        elif menu_choice == "4":
+            if model is None:
+                print("No model loaded. Please generate or load a model first.")
+                continue
+            if dataset is None:
+                print("No dataset loaded. Please load or create a dataset first.")
+                continue
             print("Training the model...")
-            # Add your training logic here
-
             while True:
                 config_name = input("Please provide the name of your training config file in the configs folder (or press Enter for default, 'q' to quit): ").strip()
                 if config_name.lower() == "q":
-                    print("Exiting.")
-                    return
+                    break
                 elif config_name == "":
                     trainingConfigPath = "configs/PaDiM_Training.yaml"
                     break
@@ -241,136 +257,145 @@ def main():
                         break
             with open(trainingConfigPath, 'r') as f:
                 trainingConfig = yaml.safe_load(f)
-
             category = select_category(dataset)
 
-            resultsPath = "results_training"
-            if not os.path.exists(resultsPath):
-                os.makedirs(resultsPath)
-            logDir = "logs"
             runName = f"{modelName}-{datasetName}-{category}"
             versionName = "version_0"
-            # versionName = f"version_{version}"
             if not os.path.exists(os.path.join(logDir, runName, versionName)):
                 os.makedirs(os.path.join(logDir, runName, versionName))
-            
             print("Logging to log directory:", os.path.join(logDir, runName))
-
             tblogger, callbacks, ckptPath = setupTensorboardLoggingAndCallbacks(logDir=logDir, runName=runName, versionName=versionName, version=0)
-            logger = setupLogging(logDir=logDir, runName=runName, versionName=versionName)
+            logger, modelDir = setupLogging(logDir=logDir, runName=runName, versionName=versionName)
 
             print("Training model...")
-            rootDir = Path("tmp/datasets/data") ## root directory to store data for anomalib
-
-            # Check if evaluator fits to training data.
-            #   If data does not contain val/test data we can't use an evaluator which relies on gt data
-            tmpEvaluator = deepcopy(model.evaluator)
-            
-            if "val" not in dataset.tags:
-                valMetricsSaved = model.evaluator.val_metrics
-                valMetrics = None
-            else:
-                valMetrics = model.evaluator.val_metrics
-                valMetricsSaved = model.evaluator.val_metrics
-            if "test" not in dataset.tags:
-                testMetricsSaved = model.evaluator.test_metrics
-                testMetrics = None
-            else:
-                testMetrics = model.evaluator.val_metrics
-                testMetricsSaved = model.evaluator.test_metrics            
-            model.evaluator = Evaluator(val_metrics=valMetrics, test_metrics=testMetrics)
-
-            engine, datamodule, inferencer = train_and_export_model(rootDir, dataset, model, trainingConfig=trainingConfig)
-            
-            # Add the evaluators back to the model incase a val/test dataset is added.
-            model.evaluator = tmpEvaluator
-            
-            ## get the test split of the dataset
-            # train_split = dataset.match(F("category.label") == category).match(
-            #     F("split") == "train"
-            # )
-
+            # tmpEvaluator = deepcopy(model.evaluator)
+            # if "val" not in dataset.tags:
+            #     valMetricsSaved = model.evaluator.val_metrics
+            #     valMetrics = None
+            # else:
+            #     valMetrics = model.evaluator.val_metrics
+            #     valMetricsSaved = model.evaluator.val_metrics
+            # if "test" not in dataset.tags:
+            #     testMetricsSaved = model.evaluator.test_metrics
+            #     testMetrics = None
+            # else:
+            #     testMetrics = model.evaluator.val_metrics
+            #     testMetricsSaved = model.evaluator.test_metrics
+            # model.evaluator = Evaluator(val_metrics=valMetrics, test_metrics=testMetrics)
+            # with exclude_from_logger():
+            engine, datamodule, inferencer = train_and_export_model(modelDir, dataset, model, trainingConfig=trainingConfig, logger=tblogger, callbacks=callbacks)
+            # model.evaluator = tmpEvaluator
             print("Running inference on dataset...")
-            run_inference(dataset, inferencer, modelName)
-
+            with exclude_from_logger():
+                run_inference(dataset, inferencer, modelName)
             session = fo.launch_app(dataset)
+            weightPath = os.path.join(modelDir, "weights", "torch", "model.pt")
+            print(f"Exported model weights to {weightPath}")
+            # engine.export(model=model,
+            #               export_type=ExportType.TORCH,
+            #               export_root=modelDir,
+            #               model_file_name=f"{modelName}.pt")
 
-
-        elif menu_choice == "2":
-            # Retrain the model with new training parameters
-            raise NotImplementedError
+        elif menu_choice == "5":
             print("Retraining the model with new parameters...")
-            # Add your logic here
-        elif menu_choice == "3" or menu_choice == "4" or menu_choice == "5":
+            raise NotImplementedError
+
+        elif menu_choice == "6" or menu_choice == "7" or menu_choice == "8":
             while True:
                 print("Please provide the name of the training data folder in datasets. E.g.: MVTecAD (or type 'q' to quit): ")
                 datasetName = input().strip()
                 if datasetName.lower() == 'q':
-                    print("Exiting.")
-                    return
+                    break
                 elif datasetName == "":
-                    datasetName = "train"
-
+                    datasetName = "traintest"
                 dataDir = os.path.join("datasets", datasetName)
-
                 if not os.path.isdir(dataDir):
                     print("Error: Directory not found.")
                 else:
                     print(f"Training data directory set to: {dataDir}")
                     break
-            
-            if menu_choice == "3" or menu_choice == "5":
-                newDatasetName = input("Please provide a name for the merged dataset (blank input adds '_merged' to current name): ").strip()
-                if newDatasetName != "":
-                    datasetName = newDatasetName
+            if menu_choice == "6":
+                if dataset is None:
+                    # If no dataset is loaded, treat as "Replace current dataset"
+                    newDatasetName = input("Please provide a name for the new dataset (blank input keeps the current name): ").strip()
+                    if newDatasetName != "":
+                        datasetName = newDatasetName
+                    print(f"Dataset name set to: {datasetName}")
+                    print("Importing dataset...")
+                    dataset, _ = importDataset(
+                        path=dataDir,
+                        name=datasetName,
+                        overwrite=False,
+                        split=["train", "test"],
+                    )
                 else:
-                    datasetName += '_merged'
-                print(f"Dataset name set to: {datasetName}")
-
-            if menu_choice == "4":
+                    newDatasetName = input("Please provide a name for the merged dataset (blank input adds '_merged' to current name): ").strip()
+                    if newDatasetName != "":
+                        datasetName = newDatasetName
+                    else:
+                        datasetName += '_merged'
+                    print(f"Dataset name set to: {datasetName}")
+                    print("Importing dataset...")
+                    newDataset, _ = importDataset(
+                        path=dataDir,
+                        name=datasetName,
+                        overwrite=False,
+                        split=["train", "test"],
+                    )
+                    dataset.merge_samples(newDataset)
+            elif menu_choice == "7":
                 newDatasetName = input("Please provide a name for the new dataset (blank input keeps the current name): ").strip()
                 if newDatasetName != "":
                     datasetName = newDatasetName
                 print(f"Dataset name set to: {datasetName}")
-
-            print("Importing dataset...")
-
-            if menu_choice == "5":
+                print("Importing dataset...")
+                dataset, _ = importDataset(
+                    path=dataDir,
+                    name=datasetName,
+                    overwrite=False,
+                    split=["train", "test"],
+                )
+            elif menu_choice == "8":
+                newDatasetName = input("Please provide a name for the pred dataset (blank input adds '_pred' to current name): ").strip()
+                if newDatasetName != "":
+                    datasetName = newDatasetName
+                else:
+                    datasetName += '_pred'
+                print(f"Dataset name set to: {datasetName}")
+                print("Importing dataset...")
                 newDataset, _ = importDataset(
                     path=dataDir,
                     name=datasetName,
                     overwrite=False,
                     split="pred",
                 )
-            else:
-                newDataset, _ = importDataset(
-                    path=dataDir,
-                    name=datasetName,
-                    overwrite=False,
-                    split=["train", "test"],
-                )
-
-            if menu_choice == "3" or menu_choice == "5":
-                dataset.merge_samples(newDataset)
-
+                if dataset is None:
+                    dataset = newDataset
+                else:
+                    dataset.merge_samples(newDataset)
             session = fo.launch_app(dataset)
 
-        elif menu_choice == "6":
+        elif menu_choice == "9":
+            if inferencer is None:
+                print("Train the model first.")
+                continue
             print("Running inference on dataset...")
             splits = input("Select the splits to run the inference on (training, validation, test, prediction, all)\n")
             split_view = createSplitView(dataset, splits)
-            if inferencer is None:
-                print("Train the model first")
-                continue
             run_inference(split_view, inferencer, modelName)
             session = fo.launch_app(split_view)
-        elif menu_choice == "7":
+
+        elif menu_choice == "10":
+            print("Exporting...")
+            name = input("Dataset name:\n")
+            exportDataset(dataset=dataset, path=os.path.join("datasets", name))
+
+        elif menu_choice == "11":
             print("Entering continuous folder mode. In this mode the program continuously observes a folder of choice. For each image a prediction is made and the result saved.")
             print("After the processing of an image it is moved to another folder of choice such that it is not processed again.")
-            print("Not Implemented yet.")
-            continue
-            obsDir = input("Which folder should be observed.\n")
-        elif menu_choice == "8":
+            obsDir = input("Which folder should be observed: ")
+
+        elif menu_choice == "12":
             print("Entering continuous camera mode. In this mode a connected camera is used for a continuous camera feed. After it gets the signal to take a picture it process it with the AD model.")
             folder = input("Please enter a name for the folder in datasets where the images should be saved.\n")
             if folder == "":
@@ -379,28 +404,31 @@ def main():
             if fault == "":
                 fault = "unknown"
             saveDir = os.path.join("datasets",folder,fault,"prediction")
+            if not os.path.exists(saveDir):
+                os.makedirs(saveDir)
+            else:
+                print(f"Warning: Directory {saveDir} already exists. New images will override the existing files.")
             print("The signal can be given manually via keyboard or automatically.")
             manual = input("Manual (m) or automatic (a)\n")
             if "m" in manual:
                 manual = True
-            elif "m" in manual:
+            elif "a" in manual:
                 manual = False
+            elif "q" in manual:
+                continue
+            else:
+                continue
             manualString = "manual" if manual else "automatic"
             print(f"You chose {manualString} mode")
             if manual:
                 print("Creating Camera Processor")
                 cameraProcessor = CameraProcessor()
+                saveDir = os.path.join("datasets","cameraPrediction","face","prediction")
                 cameraProcessor.set_crop_region(256, 256)
-                # Set the save directory
                 cameraProcessor.set_save_directory(saveDir)
-
-                # Register the save_image method as a callback
                 cameraProcessor.register_capture_callback(cameraProcessor.save_image)
-
-                # Start the processor
                 cameraProcessor.start()
                 cameraProcessor.display_frames()
-
                 print(f"Finished capturing to {saveDir}")
             else:
                 raise NotImplementedError
@@ -408,6 +436,7 @@ def main():
         elif menu_choice == "q":
             print("Exiting.")
             break
+
         else:
             print("Invalid choice. Please try again.")
 
