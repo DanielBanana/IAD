@@ -24,7 +24,8 @@ Installation mittels pip und requirements.txt
 
 ```bash
 python3 -m venv envName
-pip3 install -r requirements.txt
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
     
 Die von Anomalib implementierte Metrik "Adapative F1-Mass" hat in der Implementierung einen Fehler. Daher muss eine Anpassung in der f1_adapative_threshold.py vorgenommen werden. Diese ist unter anomalib/metrics/threshold/f1_adapative_threshold.py zu finden.
