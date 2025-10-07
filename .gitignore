@@ -2,7 +2,18 @@
 
 anomalib
 
-datasets
+datasets/cameraPrediction
+datasets/Export
+datasets/imagenette
+datasets/MVTecAD
+datasets/prediction
+datasets/prediction
+datasets/test
+datasets/train
+datasets/traintest
+
+
+
 
 res
 
