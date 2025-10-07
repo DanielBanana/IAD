@@ -174,7 +174,7 @@ if __name__ == "__main__":
     
     evaluator = Evaluator(val_metrics=val_metrics, test_metrics=test_metrics)
 
-    model = Padim(post_processor=postProcessor, evaluaator=evaluator)
+    model = Padim(post_processor=postProcessor, evaluator=evaluator)
     # model = Padim()
 
     engine, datamodule, inferencer = train_and_export_model(ROOT_DIR, dataset, model, transform=None)

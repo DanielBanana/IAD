@@ -19,7 +19,7 @@ from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
-from Setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, define_metrics, LoggerWriter, LoggerStdin
+from Setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin
 from Configs import load_config
 from Visualisation import clipEmbedding, resnetEmbedding
 from Settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
