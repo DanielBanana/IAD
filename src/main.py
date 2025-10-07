@@ -18,13 +18,13 @@ from anomalib.deploy import ExportType
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
-from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
-from Setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin
-from Configs import load_config
-from Visualisation import clipEmbedding, resnetEmbedding
-from Settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-from Training import run_inference, train_and_export_model
-from CameraProcessor import CameraProcessor
+from anomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
+from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin
+from configs import load_config
+from visualisation import clipEmbedding, resnetEmbedding
+from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from training import run_inference, train_and_export_model
+from cameraProcessor import CameraProcessor
 os.environ["TRUST_REMOTE_CODE"] = "1"
 
 @contextmanager

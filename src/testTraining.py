@@ -10,9 +10,9 @@ from torchvision.transforms.v2 import Resize
 from anomalib import TaskType
 from anomalib.models import Padim, Patchcore, Stfpm
 
-from Setup import define_metrics
-from Training import train_and_export_model, run_inference
-from AnomalyDataset import importTrainTestDataset
+from setup import define_metrics
+from training import train_and_export_model, run_inference
+from anomalyDataset import importTrainTestDataset
 
 import torch
 os.environ["TRUST_REMOTE_CODE"] = "1"

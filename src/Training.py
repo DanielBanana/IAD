@@ -10,7 +10,7 @@ from torchvision.transforms.v2 import Resize
 from anomalib.deploy import ExportType, TorchInferencer
 from anomalib.engine import Engine
 from anomalib.models import Padim, Patchcore, Stfpm
-from AnomalyDataset import FODataModule
+from anomalyDataset import FODataModule
 
 ENGINE_PARAMS = ["max_epochs", "min_epochs", "log_every_n_steps"]
 DATAMODULE_PARAMS = ["train_batch_size",

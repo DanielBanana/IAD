@@ -23,7 +23,8 @@ Im Moment dient ein Command Line Interface (CLI) als hauptsächliche  Interaktio
 Installation mittels pip und requirements.txt
 
 ```bash
-
+python3 -m venv envName
+pip3 install -r requirements.txt
 ```
     
 ## Verwendung/Beispiele

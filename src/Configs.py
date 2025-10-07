@@ -4,8 +4,8 @@ from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.visualization import ImageVisualizer
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
-from Setup import define_metrics
-from Settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from setup import define_metrics
+from settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 import shutil
 import os
 

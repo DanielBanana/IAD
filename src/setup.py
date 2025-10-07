@@ -7,7 +7,7 @@ from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastfl
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
 from anomalib.loggers import AnomalibTensorBoardLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
-from Settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 import datetime
 
 
