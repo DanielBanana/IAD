@@ -13,17 +13,17 @@ thresholding_stage: image # stage at which we apply threshold, options: [tile, i
 data:
   class_path: anomalib.data.MVTecAD
   init_args:
-    root: ./datasets/MVTecAD
+    root: ./datasets/MVTecADShort
     category: bottle
-    train_batch_size: 32
-    eval_batch_size: 32
+    train_batch_size: 10
+    eval_batch_size: 10
     num_workers: 8
     train_augmentations: null
     val_augmentations: null
     test_augmentations: null
     augmentations: null
     test_split_mode: from_dir
-    test_split_ratio: 0.2
+    test_split_ratio: 0.1
     val_split_mode: same_as_test
     val_split_ratio: 0.5
 
@@ -37,10 +37,10 @@ TrainModels:
     class_path: Padim
 
   trainer:
-    max_epochs: 3
+    max_epochs: 1
     callbacks:
       - class_path: lightning.pytorch.callbacks.EarlyStopping
         init_args:
-          patience: 42
-          monitor: pixel_AUROC
+          patience: 10
+          monitor: pixel_val_AUROC
           mode: max

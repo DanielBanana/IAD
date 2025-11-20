@@ -1,5 +1,6 @@
-enable_normalization: True
+enable_normalization: True # Only available with a validation set
 enable_threshold_matching: True
-enable_thresholding: True
-image_sensitivity: 0.5
-pixel_sensitivity: 0.5
+enable_thresholding: True # Only available with a validation set
+image_sensitivity: 0.1 # Value between 0 and 1: Should be tuned to the application. Higher sensitivity lowers the effective threshold.
+pixel_sensitivity: 0.1
+# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/how_to/models/post_processor.html
