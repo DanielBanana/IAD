@@ -12,6 +12,14 @@ from anomalib.engine import Engine
 from anomalib.models import Padim, Patchcore, Stfpm
 from anomalyDataset import FODataModule
 
+from tiledEnsemble import TrainTiledEnsemble, EvalTiledEnsemble
+from anomalyDataset import importDataset, FODataModule
+import argparse
+import os
+import logging
+from rich import traceback
+traceback.install()
+
 ENGINE_PARAMS = ["max_epochs", "min_epochs", "log_every_n_steps"]
 DATAMODULE_PARAMS = ["train_batch_size",
                    "train_augmentations",
@@ -24,19 +32,43 @@ DATAMODULE_PARAMS = ["train_batch_size",
                    "test_split_ratio",
                    "seed"]
 
-def train_and_export_model(rootDir, dataset, model, transform=None, callbacks=None, logger=None, trainingConfig={}, ckptPath=None):
+def setupModel(callbacks=None, logger=None, trainingConfig={}, ckptPath=None, tiling=False):
+    engineParams = {key: trainingConfig[key] for key in ENGINE_PARAMS if key in trainingConfig}
+    # datamoduleParams = {key: trainingConfig[key] for key in DATAMODULE_PARAMS if key in trainingConfig}
+
+    # datamodule = FODataModule(name="Train", samples=dataset, root=rootDir, **datamoduleParams)
+    # datamodule.setup()
+
+    # if tiling:
+    #     # logger.info("Image too large for one model. Image gets tiled and processed by multiple models.")
+    #     args = "configs/TiledEnsemble.yaml"
+    #     train_pipeline = TrainTiledEnsemble()
+    #     train_pipeline.setDatamodule(datamodule=datamodule)
+    #     # run training
+    #     return train_pipeline
+
+    engine = Engine(callbacks=list(callbacks.values()), logger=logger, **engineParams)
+
+    return engine
+
+def train_and_export_model(rootDir, dataset, model, transform=None, callbacks=None, logger=None, trainingConfig={}, ckptPath=None, tiling=False):
     engineParams = {key: trainingConfig[key] for key in ENGINE_PARAMS if key in trainingConfig}
     datamoduleParams = {key: trainingConfig[key] for key in DATAMODULE_PARAMS if key in trainingConfig}
 
-    engine = Engine(callbacks=list(callbacks.values()), logger=logger, **engineParams)
     datamodule = FODataModule(name="Train", samples=dataset, root=rootDir, **datamoduleParams)
     datamodule.setup()
-    engine.fit(model=model, datamodule=datamodule)
 
-    # engine.export(
-    #     model=model,
-    #     export_type=ExportType.TORCH,
-    # )
+    if tiling:
+        # logger.info("Image too large for one model. Image gets tiled and processed by multiple models.")
+        args = "configs/TiledEnsemble.yaml"
+        train_pipeline = TrainTiledEnsemble()
+        train_pipeline.setDatamodule(datamodule=datamodule)
+        # run training
+        train_pipeline.run(args)
+        return train_pipeline
+
+    engine = Engine(callbacks=list(callbacks.values()), logger=logger, **engineParams)
+    engine.fit(model=model, datamodule=datamodule)
     engine.export(model=model,
                   export_type=ExportType.TORCH,
                   export_root=rootDir,
@@ -46,17 +78,12 @@ def train_and_export_model(rootDir, dataset, model, transform=None, callbacks=No
     torch_model_path = os.path.join(rootDir, "weights", "torch", "model.pt")
     metadata = os.path.join(rootDir, "metadata.json")
 
-    inferencer = TorchInferencer(
-        path=torch_model_path,
-        device="cpu",
-    )
+    return engine, datamodule
 
-    return engine, datamodule, inferencer
-
-def run_inference(sample_collection, inferencer: TorchInferencer, key):
+def run_inference(sample_collection, engine: Engine, key):
     for sample in sample_collection.iter_samples(autosave=True, progress=True):
-        output = inferencer.predict(image=Image.open(sample.filepath))
-
+        output = engine.predict(data_path=sample.filepath)[0]
+        
         conf = output.pred_score.item()
         anomaly = "anomaly" if output.pred_label else "normal"
 
