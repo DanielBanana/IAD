@@ -19,12 +19,14 @@ from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 from anomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
-from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin
+from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin, find_first_file
 from configs import load_config
 from visualisation import clipEmbedding, resnetEmbedding
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-from training import run_inference, train_and_export_model
+from training import run_inference, train_and_export_model, setupModel
 from cameraProcessor import CameraProcessor
+from anomalib.callbacks import LoadModelCallback
+
 os.environ["TRUST_REMOTE_CODE"] = "1"
 
 @contextmanager
@@ -145,6 +147,8 @@ def main():
     print("Welcome to the ML Model CLI!")
 
     firstTime = True
+    loadModelCallback = None
+    callbacks = dict()
     
     session = {"model": None,
                "modelConfig": None,
@@ -192,6 +196,8 @@ def main():
             configDir = "configs"
             while True:
                 userPath = input("Please provide the path to your YAML config file: ").strip()
+                if not userPath.lower().endswith('.yaml'):
+                    userPath = userPath + '.yaml'
                 configPath = os.path.join(configDir, userPath)
                 if userPath == "q":
                     break
@@ -214,14 +220,23 @@ def main():
                 print(f"Model {model} created.")
 
         elif menu_choice == "2":
-            modelPath = input("Please provide the path to your model weights file (model.pt): ").strip()
+            folderPath = input("Please provide the path to your logs folder (e.g. logs/20251028-0946): ").strip()
+            modelPath = find_first_file(folderPath, "model.pt")
+            for model in MODELS:
+                configPath = find_first_file(folderPath, f"{model}.yaml")
+            modelConfig, fullCopyPath = load_config(configPath, copyPath=logDir)
+            modelName = modelConfig.pop("model").lower()
+            model = create_model(modelName, modelConfig)
+
             if not os.path.exists(modelPath):
                 print("Error: Model file not found.")
                 continue
             else:
                 print(f"Found model weights at {modelPath}")
-            model = "existing_model"  # Placeholder for your model loading logic
-            print("Model loaded.")
+                loadModelCallback = LoadModelCallback(weights_path=modelPath) 
+                if loadModelCallback is not None:
+                    callbacks["loadModel"] = loadModelCallback
+                print("Model loaded.")
 
         elif menu_choice == "3":
             print("Creating embedding...")
@@ -247,7 +262,7 @@ def main():
                 if config_name.lower() == "q":
                     break
                 elif config_name == "":
-                    trainingConfigPath = "configs/PaDiM_Training.yaml"
+                    trainingConfigPath = f"configs/{modelName}_Training.yaml"
                     break
                 else:
                     trainingConfigPath = os.path.join("configs", config_name)
@@ -265,36 +280,25 @@ def main():
                 os.makedirs(os.path.join(logDir, runName, versionName))
             print("Logging to log directory:", os.path.join(logDir, runName))
             tblogger, callbacks, ckptPath = setupTensorboardLoggingAndCallbacks(logDir=logDir, runName=runName, versionName=versionName, version=0)
+
             logger, modelDir = setupLogging(logDir=logDir, runName=runName, versionName=versionName)
 
             print("Training model...")
-            # tmpEvaluator = deepcopy(model.evaluator)
-            # if "val" not in dataset.tags:
-            #     valMetricsSaved = model.evaluator.val_metrics
-            #     valMetrics = None
-            # else:
-            #     valMetrics = model.evaluator.val_metrics
-            #     valMetricsSaved = model.evaluator.val_metrics
-            # if "test" not in dataset.tags:
-            #     testMetricsSaved = model.evaluator.test_metrics
-            #     testMetrics = None
-            # else:
-            #     testMetrics = model.evaluator.val_metrics
-            #     testMetricsSaved = model.evaluator.test_metrics
-            # model.evaluator = Evaluator(val_metrics=valMetrics, test_metrics=testMetrics)
-            # with exclude_from_logger():
-            engine, datamodule, inferencer = train_and_export_model(modelDir, dataset, model, trainingConfig=trainingConfig, logger=tblogger, callbacks=callbacks)
+    
+            engine, datamodule = train_and_export_model(rootDir=modelDir,
+                                                        dataset=dataset,
+                                                        model=model,
+                                                        trainingConfig=trainingConfig,
+                                                        logger=tblogger,
+                                                        callbacks=callbacks)
             # model.evaluator = tmpEvaluator
             print("Running inference on dataset...")
             with exclude_from_logger():
-                run_inference(dataset, inferencer, modelName)
+                run_inference(dataset, engine, modelName)
             session = fo.launch_app(dataset)
             weightPath = os.path.join(modelDir, "weights", "torch", "model.pt")
             print(f"Exported model weights to {weightPath}")
-            # engine.export(model=model,
-            #               export_type=ExportType.TORCH,
-            #               export_root=modelDir,
-            #               model_file_name=f"{modelName}.pt")
+
 
         elif menu_choice == "5":
             print("Retraining the model with new parameters...")
@@ -376,13 +380,13 @@ def main():
             session = fo.launch_app(dataset)
 
         elif menu_choice == "9":
-            if inferencer is None:
+            if engine is None:
                 print("Train the model first.")
                 continue
             print("Running inference on dataset...")
             splits = input("Select the splits to run the inference on (training, validation, test, prediction, all)\n")
             split_view = createSplitView(dataset, splits)
-            run_inference(split_view, inferencer, modelName)
+            run_inference(split_view, engine, modelName)
             session = fo.launch_app(split_view)
 
         elif menu_choice == "10":

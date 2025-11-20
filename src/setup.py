@@ -220,3 +220,11 @@ def setupLogging(logDir, runName, versionName):
     # logger.addHandler(console_handler)
     # sys.stdout = LoggerWriter(logger, logging.INFO)
     return logger, logDir
+
+def find_first_file(directory, target_filename):
+    target_lower = target_filename.lower()
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.lower() == target_lower:
+                return os.path.join(root, file)
+    return None  # Return None if the file is not found
