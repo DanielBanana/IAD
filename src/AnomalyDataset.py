@@ -782,6 +782,10 @@ class FODataModule(AnomalibDataModule):
             Name of the datamodule.
         """
         return self._name
+    
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        return state
 
     @classmethod
     def from_file(
@@ -911,6 +915,8 @@ class FODataset(AnomalibDataset):
         ... )
     """
 
+
+
     def __init__(
         self,
         name: str,
@@ -938,6 +944,10 @@ class FODataset(AnomalibDataset):
             str: Name of the dataset
         """
         return self._name
+    
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        return state
 
 def make_fiftyone_dataset(
     samples: fod.Dataset,
