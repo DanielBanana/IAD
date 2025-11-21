@@ -39,6 +39,7 @@ def generate_synthetic_image(image_size, objects, noise_intensity=5):
 
     return noisy_image
 
+
 # Example usage
 if __name__ == "__main__":
     # Define image size (width, height)
@@ -81,4 +82,15 @@ if __name__ == "__main__":
     # Display the image
     # cv2.imshow('Synthetic Grayscale Noisy Image', image)
     # cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    # Create the gear image
+    gear_image = create_gear_image(size=500, gear_center=(250, 250), gear_radius=100, num_teeth=12, tooth_length=40)
+
+    # Save the image
+    cv2.imwrite('gear_test_image.png', gear_image)
+
+    # Display the image
+    cv2.imshow('Gear Test Image', gear_image)
+    cv2.waitKey(0)
     cv2.destroyAllWindows()
