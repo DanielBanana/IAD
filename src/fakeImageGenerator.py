@@ -43,54 +43,24 @@ def generate_synthetic_image(image_size, objects, noise_intensity=5):
 # Example usage
 if __name__ == "__main__":
     # Define image size (width, height)
-    image_size = (100,100)
+    image_size = (2000,1000)
 
     # Define objects to include in the image (grayscale intensity: 0-255)
     objects = [
         {
             'type': 'rectangle',
-            'bottom_left': (10, 10),
-            'top_right': (20, 20),
-            'color': 100  # Grayscale intensity
-        },
-        {
-            'type': 'rectangle',
-            'bottom_left': (10, 30),
-            'top_right': (20, 40),
-            'color': 100  # Grayscale intensity
-        },
-        {
-            'type': 'rectangle',
-            'bottom_left': (10, 50),
-            'top_right': (20, 60),
-            'color': 100  # Grayscale intensity
-        },
-        {
-            'type': 'rectangle',
-            'bottom_left': (10, 70),
-            'top_right': (20, 80),
+            'bottom_left': (500, 200),
+            'top_right': (800, 250),
             'color': 100  # Grayscale intensity
         },
     ]
 
     # Generate the image with mild noise
-    image = generate_synthetic_image(image_size, objects, noise_intensity=0)
-
+    image = generate_synthetic_image(image_size, objects, noise_intensity=100)
     # Save the image
     cv2.imwrite('images/object.png', image)
 
     # Display the image
     # cv2.imshow('Synthetic Grayscale Noisy Image', image)
     # cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-    # Create the gear image
-    gear_image = create_gear_image(size=500, gear_center=(250, 250), gear_radius=100, num_teeth=12, tooth_length=40)
-
-    # Save the image
-    cv2.imwrite('gear_test_image.png', gear_image)
-
-    # Display the image
-    cv2.imshow('Gear Test Image', gear_image)
-    cv2.waitKey(0)
     cv2.destroyAllWindows()
