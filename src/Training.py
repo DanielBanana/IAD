@@ -10,10 +10,10 @@ from torchvision.transforms.v2 import Resize
 from anomalib.deploy import ExportType, TorchInferencer
 from anomalib.engine import Engine
 from anomalib.models import Padim, Patchcore, Stfpm
-from anomalyDataset import FODataModule
+from AnomalyDataset import FODataModule
 
 from tiledEnsemble import TrainTiledEnsemble, EvalTiledEnsemble
-from anomalyDataset import importDataset, FODataModule
+from AnomalyDataset import importDataset, FODataModule
 import argparse
 import os
 import logging

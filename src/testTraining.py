@@ -12,7 +12,7 @@ from anomalib.models import Padim, Patchcore, Stfpm
 
 from setup import define_metrics
 from training import train_and_export_model, run_inference
-from anomalyDataset import importTrainTestDataset
+from AnomalyDataset import importTrainTestDataset
 
 import torch
 os.environ["TRUST_REMOTE_CODE"] = "1"

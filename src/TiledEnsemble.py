@@ -33,7 +33,7 @@ from anomalib.models import AnomalibModule
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT
 
-from anomalyDataset import importDataset, FODataModule
+from AnomalyDataset import importDataset, FODataModule
 
 # from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import (
 #     get_ensemble_datamodule,
