@@ -18,7 +18,7 @@ from anomalib.deploy import ExportType
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
-from anomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
+from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset
 from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin, find_first_file
 from configs import load_config
 from visualisation import clipEmbedding, resnetEmbedding
@@ -202,7 +202,7 @@ def main():
                 if userPath == "q":
                     break
                 elif userPath == "":
-                    configPath = os.path.join(configDir, "PaDiM.yaml")
+                    configPath = os.path.join(configDir, "padim.yaml")
                     break
                 if not os.path.exists(configPath):
                     print("Error: Config file not found.")
