@@ -127,7 +127,7 @@ class Measure:
         # minima_indices = np.where(gradient < -threshold)[0]
 
         # Find local maxima (peaks)
-        _maxima_indices = argrelextrema(gradient, np.greater, order=order)[0]
+        _maxima_indices = argrelextrema(gradient, np.greater, order=order,)[0]
         maxima_indices = []
         for idx in _maxima_indices:
             if np.abs(gradient[idx]) > threshold:
@@ -162,6 +162,8 @@ class LineMeasure(Measure):
         self.nProjections = nProjections
         if sigma <= 0.0:
             self.smooth = False
+        else:
+            self.smooth = True
         # Normalize the direction vector
         direction_norm = np.linalg.norm(self.direction)
         if direction_norm == 0:
@@ -172,7 +174,7 @@ class LineMeasure(Measure):
 
         profilePoints = self.getProfilePoints(nProjections)
 
-        projectionLines, profilePoints, profileValues, measurePositions = self.getProjectionLines(profilePoints, sigma, interpolate=True, smooth=True)
+        projectionLines, profilePoints, profileValues, measurePositions = self.getProjectionLines(profilePoints, sigma, interpolate=True, smooth=self.smooth)
 
         super().__init__(
             startPXL=np.round(origin),
@@ -237,7 +239,7 @@ class LineMeasure(Measure):
             profileValues = interp_func(interpolated_positions)
             profilePoints = self.getProfilePoints(self.length)
 
-        if smooth:
+        if smooth and sigma > 0.0:
             profileValues = self.gaussianSmoothing(profileValues, sigma)
 
         return projectionLines, profilePoints, profileValues, measurePositions
@@ -248,10 +250,13 @@ class LineMeasure(Measure):
         self.lightEdges = []
         self.darkEdges = []
         maxis = self.extrema[0]
-        self.lightEdges,_,_,_ = self.getProjectionLines(self.profilePoints[maxis], sigma=0.0)
+        lightEdges,_,_,_ = self.getProjectionLines(self.profilePoints[maxis], sigma=0.0)
+        self.lightEdges = np.asarray(lightEdges)
 
         minis = self.extrema[1]
-        self.darkEdges,_,_,_ = self.getProjectionLines(self.profilePoints[minis], sigma=0.0)
+        darkEdges,_,_,_ = self.getProjectionLines(self.profilePoints[minis], sigma=0.0)
+        self.darkEdges = np.asarray(darkEdges)
+
 
         return [self.darkEdges, self.lightEdges], self.gradient
 
@@ -285,6 +290,8 @@ class CurveMeasure(Measure):
         self.angleExtent = angleExtent
         self.projectionWidth = projectionWidth
         self.nProjections = nProjections
+        self.lightEdges = None
+        self.darkEdges = None
         if sigma <= 0.0:
             self.smooth = False
         # Normalize the direction vector
@@ -374,7 +381,7 @@ class CurveMeasure(Measure):
             profileValues = interp_func(interpolated_positions)
             profilePoints, profileAngles = self.getProfilePoints(length)
 
-        if smooth:
+        if smooth and sigma > 0.0:
             profileValues = self.gaussianSmoothing(profileValues, sigma)
 
         return projectionLines, profilePoints, profileAngles, profileValues, measurePositions
@@ -385,10 +392,12 @@ class CurveMeasure(Measure):
         self.lightEdges = []
         self.darkEdges = []
         maxis = self.extrema[0]
-        self.lightEdges,_,_,_,_ = self.getProjectionLines(self.profilePoints[maxis], self.profileAngles[maxis], sigma=0.0)
+        lightEdges,_,_,_,_ = self.getProjectionLines(self.profilePoints[maxis], self.profileAngles[maxis], sigma=0.0)
+        self.lightEdges = np.asarray(lightEdges)
 
         minis = self.extrema[1]
-        self.darkEdges,_,_,_,_ = self.getProjectionLines(self.profilePoints[minis], self.profileAngles[minis], sigma=0.0)
+        darkEdges,_,_,_,_ = self.getProjectionLines(self.profilePoints[minis], self.profileAngles[minis], sigma=0.0)
+        self.darkEdges = np.asarray(darkEdges)
 
         return [self.darkEdges, self.lightEdges], self.gradient
 
@@ -402,29 +411,51 @@ class CurveMeasure(Measure):
         visImage3 = self.plotLines(self.image.copy(), self.darkEdges)
         cv2.imwrite("images/darkEdges.png", visImage3)
 
+class EdgeMeasure():
+    def __init__(
+            self,
+            lineMeasure: LineMeasure,
+            darkObject = True
+    ):
+        self.lineMeasure = lineMeasure
+        self.darkObject = darkObject
+
+    def getLength(self):
+        if self.darkObject:
+            begin = np.mean(self.lineMeasure.darkEdges[0], axis=0)
+            end = np.mean(self.lineMeasure.lightEdges[-1], axis=0)
+        else:
+            begin = np.mean(self.lineMeasure.lightEdges[0], axis=0)
+            end = np.mean(self.lineMeasure.darkEdges[-1], axis=0)
+        length = np.linalg.norm(end-begin, ord=2)
+        return length
+
+
 if __name__ == "__main__": 
 
-    image = cv2.imread("images/gears2.jpg")
-    # lineMeasure1 = LineMeasure(image,
-    #                            [15,10],
-    #                            direction=[0,1],
-    #                            length=70,
-    #                            projectionWidth=20,
-    #                            nProjections=10,
-    #                            sigma=2.0,
-    #                            threshold=1)
-    # lineMeasure1.getEdges()
-    # lineMeasure1.visualize()
-    curveMeasure = CurveMeasure(
-        image=image, 
-        center=[280,500],
-        radius=150,
-        angleStart=0,
-        angleExtent=np.pi/2,
-        projectionWidth=30,
-        nProjections=30,
-        sigma=1.1,
-        threshold=15
-    )
-    curveMeasure.getEdges()
-    curveMeasure.visualize()
+    image = cv2.imread("images/object.png")
+    lineMeasure1 = LineMeasure(image,
+                               [495,225],
+                               direction=[1,0],
+                               length=310,
+                               projectionWidth=20,
+                               nProjections=30,
+                               sigma=2.0,
+                               threshold=10)
+    lineMeasure1.getEdges()
+    lineMeasure1.visualize()
+    eM = EdgeMeasure(lineMeasure=lineMeasure1)
+    print(eM.getLength())
+    # curveMeasure = CurveMeasure(
+    #     image=image, 
+    #     center=[280,500],
+    #     radius=150,
+    #     angleStart=0,
+    #     angleExtent=np.pi/2,
+    #     projectionWidth=30,
+    #     nProjections=30,
+    #     sigma=1.1,
+    #     threshold=15
+    # )
+    # curveMeasure.getEdges()
+    # curveMeasure.visualize()
