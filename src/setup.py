@@ -1,15 +1,17 @@
 import os
 import sys
 import logging
+import datetime
+
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder
 from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
-from anomalib.loggers import AnomalibTensorBoardLogger
+from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-import datetime
-
+from pathlib import Path
+from typing import Literal
 
 def define_metrics():
     # val metrics (needed for early stopping)
@@ -173,6 +175,38 @@ def setupTensorboardLoggingAndCallbacks(logDir, runName, versionName, version) -
         version=version)
     
     return tblogger, callbacks, os.path.join(checkpointDir, "best.pt")
+
+def setupWandBLoggingAndCallbacks(logDir:str, runName:str, version:int, checkpointFileName:str="checkpoint_best", id:str|None=None) -> Tuple[AnomalibWandbLogger, dict[str,Any], Path, Path]:
+    runDir:Path = Path(os.path.join(logDir, runName, f"version_{version}"))
+    checkpointDir:Path = runDir / "checkpoints"
+    if not os.path.exists(checkpointDir):
+        os.mkdir(checkpointDir)
+
+    checkpointCallback = ModelCheckpoint(
+        dirpath=checkpointDir,
+        filename=checkpointFileName,
+        monitor="image_F1AdaptiveThreshold",  # val_loss not found?
+        verbose=True,
+        save_top_k=1,  # Save only the best model
+        mode="min",  # Save the model with the minimum training loss
+    )
+    
+    graphCallback = GraphLogger()
+    timerCallback = TimerCallback()
+    progressBar = TQDMProgressBar(refresh_rate=50)
+
+    callbacks:dict[str, Any] = {
+        "progress_bar": progressBar,
+        "checkpoint": checkpointCallback,
+        "graph": graphCallback,
+        "timer": timerCallback
+    }
+    
+    wandbLogger = AnomalibWandbLogger(name=runName, save_dir=runDir, version=str(version), project="Glas 4.0")
+
+    return wandbLogger, callbacks, runDir, checkpointDir
+    
+
 
 class LoggerWriter:
     def __init__(self, logger, log_level=logging.INFO):
