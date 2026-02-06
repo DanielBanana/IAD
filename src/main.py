@@ -23,7 +23,7 @@ from setup import create_datamodule, create_model, setupTensorboardLoggingAndCal
 from configs import load_config
 from visualisation import clipEmbedding, resnetEmbedding
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-from training import run_inference, train_and_export_model, setupModel
+from Training import run_inference, train_and_export_model, setupModel
 from cameraProcessor import CameraProcessor
 from anomalib.callbacks import LoadModelCallback
 
