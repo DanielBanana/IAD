@@ -53,3 +53,15 @@ DEFAULT_TEXT_CONFIG = {
     "color": "white",
     "background": (0, 0, 0, 128),
 }
+
+ENGINE_PARAMS = ["max_epochs", "min_epochs", "log_every_n_steps"]
+DATAMODULE_PARAMS = ["train_batch_size",
+                   "train_augmentations",
+                   "val_augmentations", 
+                   "test_augmentations",
+                   "augmentations",
+                   "val_split_mode",
+                   "val_split_ratio",
+                   "test_split_mode",
+                   "test_split_ratio",
+                   "seed"]
