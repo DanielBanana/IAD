@@ -71,10 +71,9 @@ from anomalib.pre_processing import PreProcessor
 from anomalib.metrics.evaluator import Evaluator
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler, TileCollater
-
-
 import os
-"""Tiled ensemble - pipelines"""
+
+
 
 class TrainTiledEnsemble(Pipeline):
     """Tiled ensemble training pipeline."""
@@ -82,6 +81,7 @@ class TrainTiledEnsemble(Pipeline):
     def __init__(self) -> None:
         self.root_dir: Path
         self.datamodule = None
+        self.datamodule_args = None
         self.dataset = None
 
     def _setup_runners(self, args: dict) -> list[Runner]:
@@ -95,14 +95,31 @@ class TrainTiledEnsemble(Pipeline):
             list[Runner]: List of runners executing tiled ensemble train + val jobs.
         """
         runners: list[Runner] = []
-        self.root_dir = TiledEnsembleEngine.setup_ensemble_workspace(args)
 
-        seed = args["seed"]
+        if self.datamodule_args is not None:
+            args["data"] = self.datamodule_args
+        self.root_dir = TiledEnsembleEngine.setup_ensemble_workspace(args) # Path(args["default_root_dir"]) / model_name / dataset_name / category / v_(versionNr)
+
+        seed:int = args["seed"]
         accelerator = args["accelerator"]
         tiling_args = args["tiling"]
-        data_args = args["data"] # TODO: Example pipeline takes config and loads from disk, we want to supply the data as a loaded datamodule
+        data_args = args.get("data", None) # TODO: Example pipeline takes config and loads from disk, we want to supply the data as a loaded datamodule
         normalization_stage = NormalizationStage(args["normalization_stage"])
         model_args = args["TrainModels"]["model"] # TODO: Example pipeline is really simple in the amount and type of model arguments
+
+        # valSplitMode = None
+        # if data_args is not None:
+        #     init_args = data_args.get("init_args", None)
+        #     if init_args is not None:
+        #         valSplitMode = init_args.get("val_split_mode", None)
+
+        # if valSplitMode is None:
+        if self.datamodule is not None:
+            self.data_args = {"name": {"init_args":self.datamodule.name}}
+            valSplitMode = self.datamodule.val_split_mode
+        else:
+            print("Neither data_args nor datamodule given; Quitting.")
+            exit(1)
 
         train_job_generator = TrainModelJobGenerator(
             seed=seed,
@@ -126,18 +143,18 @@ class TrainTiledEnsemble(Pipeline):
             normalization_stage=normalization_stage,
         )
 
-        fo_predict_job_generator = FOPredictJobGenerator(
-            PredictData.VAL,
-            seed=seed,
-            accelerator=accelerator,
-            root_dir=self.root_dir,
-            tiling_args=tiling_args,
-            data_args=data_args,
-            datamodule=self.datamodule,
-            model_args=model_args,
-            normalization_stage=normalization_stage,
-            dataset = self.dataset
-        )
+        # fo_predict_job_generator = FOPredictJobGenerator(
+        #     PredictData.VAL,
+        #     seed=seed,
+        #     accelerator=accelerator,
+        #     root_dir=self.root_dir,
+        #     tiling_args=tiling_args,
+        #     data_args=data_args,
+        #     datamodule=self.datamodule,
+        #     model_args=model_args,
+        #     normalization_stage=normalization_stage,
+        #     dataset = self.dataset
+        # )
 
         # 1. train
         if accelerator == "cuda":
@@ -154,7 +171,7 @@ class TrainTiledEnsemble(Pipeline):
                 ),
             )
 
-        if data_args["init_args"]["val_split_mode"] == ValSplitMode.NONE:
+        if valSplitMode == ValSplitMode.NONE:
             logger.warning("No validation set provided, skipping statistics calculation.")
             return runners
 
@@ -184,10 +201,28 @@ class TrainTiledEnsemble(Pipeline):
 
         return runners
 
-    def setDatamodule(self, datamodule):
+    def setDatamodule(self, datamodule:FODataModule) -> None:
         self.datamodule = datamodule
+        self.datamodule_args = {
+            "init_args": {
+                "name": datamodule.name,
+                "root": datamodule.root,
+                "category": datamodule.category,
+                "train_batch_size": datamodule.train_batch_size,
+                "eval_batch_size": datamodule.eval_batch_size,
+                "num_workers": datamodule.num_workers,
+                "train_augmentations": datamodule.train_augmentations,
+                "val_augmentations": datamodule.val_augmentations,
+                "test_augmentations": datamodule.test_augmentations,
+                "augmentations": None,
+                "test_split_mode": datamodule.test_split_mode,
+                "test_split_ratio": datamodule.test_split_ratio,
+                "val_split_mode": datamodule.val_split_mode,
+                "val_split_ratio": datamodule.val_split_ratio,
+            }
+        }
 
-    def setFODataset(self, dataset):
+    def setFODataset(self, dataset:fo.Dataset) -> None:
         self.dataset = dataset
 
 
@@ -201,6 +236,7 @@ class EvalTiledEnsemble(Pipeline):
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir)
         self.datamodule = None
+        self.datamodule_args = None
         self.dataset = None
 
 
@@ -217,6 +253,8 @@ class EvalTiledEnsemble(Pipeline):
         """
         runners: list[Runner] = []
 
+        if self.datamodule_args is not None:
+            args["data"] = self.datamodule_args
         if args["data"]["init_args"]["test_split_mode"] == TestSplitMode.NONE:
             logger.info("Test split mode set to `none`, skipping test phase.")
             return runners
@@ -224,7 +262,7 @@ class EvalTiledEnsemble(Pipeline):
         seed = args["seed"]
         accelerator = args["accelerator"]
         tiling_args = args["tiling"]
-        data_args = args["data"]
+        data_args = args.get("data", None)
         normalization_stage = NormalizationStage(args["normalization_stage"])
         thresholding_stage = ThresholdingStage(args["thresholding_stage"])
         model_args = args["TrainModels"]["model"]
@@ -241,18 +279,18 @@ class EvalTiledEnsemble(Pipeline):
             normalization_stage=normalization_stage
         )
 
-        fo_predict_job_generator = FOPredictJobGenerator(
-            PredictData.TEST,
-            seed=seed,
-            accelerator=accelerator,
-            root_dir=self.root_dir,
-            tiling_args=tiling_args,
-            data_args=data_args,
-            datamodule=self.datamodule,
-            model_args=model_args,
-            normalization_stage=normalization_stage,
-            dataset = self.dataset
-        )
+        # fo_predict_job_generator = FOPredictJobGenerator(
+        #     PredictData.TEST,
+        #     seed=seed,
+        #     accelerator=accelerator,
+        #     root_dir=self.root_dir,
+        #     tiling_args=tiling_args,
+        #     data_args=data_args,
+        #     datamodule=self.datamodule,
+        #     model_args=model_args,
+        #     normalization_stage=normalization_stage,
+        #     dataset = self.dataset
+        # )
         # 1. predict using test data
         if accelerator == "cuda":
             runners.append(
@@ -302,8 +340,26 @@ class EvalTiledEnsemble(Pipeline):
 
         return runners
     
-    def setDatamodule(self, datamodule):
+    def setDatamodule(self, datamodule: FODataModule):
         self.datamodule = datamodule
+        self.datamodule_args = {
+            "init_args": {
+                "name": datamodule.name,
+                "root": datamodule.root,
+                "category": datamodule.category,
+                "train_batch_size": datamodule.train_batch_size,
+                "eval_batch_size": datamodule.eval_batch_size,
+                "num_workers": datamodule.num_workers,
+                "train_augmentations": datamodule.train_augmentations,
+                "val_augmentations": datamodule.val_augmentations,
+                "test_augmentations": datamodule.test_augmentations,
+                "augmentations": None,
+                "test_split_mode": datamodule.test_split_mode,
+                "test_split_ratio": datamodule.test_split_ratio,
+                "val_split_mode": datamodule.val_split_mode,
+                "val_split_ratio": datamodule.val_split_ratio,
+            }
+        }
 
     def setFODataset(self, dataset):
         self.dataset = dataset
@@ -411,7 +467,7 @@ class TrainModelJobGenerator(JobGenerator):
         root_dir: Path,
         tiling_args: dict,
         data_args: dict,
-        datamodule,
+        datamodule: AnomalibDataModule,
         normalization_stage: NormalizationStage,
     ) -> None:
         self.seed = seed
@@ -419,7 +475,7 @@ class TrainModelJobGenerator(JobGenerator):
         self.root_dir = root_dir
         self.tiling_args = tiling_args
         self.data_args = data_args
-        self.datamodule_ = datamodule
+        self.datamodule = datamodule
         self.normalization_stage = normalization_stage
 
     @property
@@ -460,7 +516,7 @@ class TrainModelJobGenerator(JobGenerator):
                 image_size=self.tiling_args["image_size"],
                 tiler=tiler,
                 tile_index=tile_index,
-                datamodule=self.datamodule_
+                datamodule=self.datamodule
             )
             model = get_ensemble_model(
                 model_args=args["model"],
@@ -721,7 +777,7 @@ class PredictJobGenerator(JobGenerator):
         self.data_args = data_args
         self.model_args = model_args
         self.normalization_stage = normalization_stage
-        self.datamodule_ = datamodule
+        self.datamodule = datamodule
 
     @property
     def job_class(self) -> type:
@@ -760,7 +816,7 @@ class PredictJobGenerator(JobGenerator):
                 image_size=self.tiling_args["image_size"],
                 tiler=tiler,
                 tile_index=tile_index,
-                datamodule=self.datamodule_
+                datamodule=self.datamodule
             )
 
             # check if predict step is positioned after training
