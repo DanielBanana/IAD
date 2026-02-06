@@ -4,12 +4,14 @@
 """Run tiled ensemble training."""
 
 # from anomalib.pipelines.tiled_ensemble import EvalTiledEnsemble, TrainTiledEnsemble
-from tiledEnsemble import TrainTiledEnsemble, EvalTiledEnsemble
-from anomalyDataset import importDataset, FODataModule
+from TiledEnsemble import TrainTiledEnsemble, EvalTiledEnsemble
+from AnomalyDataset import importDataset, FODataModule
 import argparse
 import os
 import logging
 from rich import traceback
+from pathlib import Path
+import yaml
 traceback.install()
 log_file = "runs/pipeline.log"
 logger = logging.getLogger(__name__)
@@ -46,26 +48,24 @@ if __name__ == "__main__":
 
     dataset, _ = importDataset(
         path=dataDir,
-        name=datasetName,
-        overwrite=False,
-        split=["train", "test"],
+        name=datasetName + "_tiled",
+        overwrite=True,
+        split=("train", "test"),
     )
 
     datamodule = FODataModule(name="Train", samples=dataset, **datamoduleParams)
 
-    # with Path(args.config).open(encoding="utf-8") as file:
-    #     args = yaml.safe_load(file)
+    with Path(args.config).open(encoding="utf-8") as file:
+        parsedArgs = yaml.safe_load(file)
 
     print("Running tiled ensemble train pipeline")
     train_pipeline = TrainTiledEnsemble()
     train_pipeline.setDatamodule(datamodule=datamodule)
     train_pipeline.setFODataset(dataset=dataset)
-    # run training
     train_pipeline.run(args)
 
     print("Running tiled ensemble test pipeline.")
     # pass the root dir from train run to load checkpoints
     test_pipeline = EvalTiledEnsemble(train_pipeline.root_dir)
     test_pipeline.setDatamodule(datamodule=datamodule)
-    test_pipeline.setFODataset(dataset=dataset)
     test_pipeline.run(args)
