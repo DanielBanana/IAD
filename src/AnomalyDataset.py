@@ -588,7 +588,7 @@ class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
         )
         self._image_exporter.setup()
 
-    def export_sample(self, sample):
+    def export_sample(self, sample:fo.Sample):
         """Exports the given sample to the dataset.
 
         Args:
@@ -601,7 +601,6 @@ class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
         split = sample["split"]
 
         outpath = os.path.join(self._data_dir, category, split, anomalyType, file)
-        out_image_path, _ = self._image_exporter.export(sample.filepath, outpath=outpath)
 
         if sample.metadata is None:
             metadata = fo.ImageMetadata.build_for(sample.filepath)
@@ -619,7 +618,10 @@ class AnomalyImageTreeExporter(GenericSampleDatasetExporter):
             split,
             anomalyType,
             #sample.tags[0]
-            ))
+        ))
+
+        out_image_path, _ = self._image_exporter.export(sample.filepath, outpath=outpath)
+
         
     def close(self, *args):
         """Performs any necessary actions after the last sample has been
@@ -915,8 +917,6 @@ class FODataset(AnomalibDataset):
         ... )
     """
 
-
-
     def __init__(
         self,
         name: str,
@@ -1002,7 +1002,7 @@ def make_fiftyone_dataset(
                 sample["label"] = DirType.NORMAL
             elif sample.split == Split.TEST:
                 sample["label"] = DirType.NORMAL_TEST
-            elif samples.plit == Split.VAL:
+            elif sample.split == Split.VAL:
                 sample["label"] = None
         elif sample.label_index == LabelName.ABNORMAL:
             sample["label"] = DirType.ABNORMAL
@@ -1056,14 +1056,13 @@ def _to_list(arg):
 
     return [arg]
 
-def exportDataset(dataset, path, overwrite=True):
+def exportDataset(dataset:FODataset, path:Path, overwrite:bool=True):
     exporter = AnomalyImageTreeExporter(path)
     for sample in dataset:
-        exporter.export_sample(sample)
+        _ = exporter.export_sample(sample)
     exporter.close()
 
-
-def importDataset(path, name, overwrite=True, split: Union[str, Tuple[str, str], Tuple[str]] = ("train", "test")):
+def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...] = ("train", "test")) -> Tuple[fo.Dataset,dict[str,Any]|None]:
     """For importing training and/or test datasets. Not meant for unknown data which should be predicted on. Use
     importPredictDataset for that.
 
@@ -1103,9 +1102,11 @@ def importDataset(path, name, overwrite=True, split: Union[str, Tuple[str, str],
     elif "pred" in split:
         return loadPredictDataset(path, name)
     else:
-        raise ValueError("split must be 'train', 'test' or ('train', 'test')")
+        raise ValueError("split must be 'train', 'test', ('train', 'test') or predß")
 
     dataset = fod.Dataset(name=name, overwrite=overwrite)
+    info = None
+    splits:set[Split] = set()
 
     with importer:
         for paths, image_metadata, category, split, anomalyType, label_index in importer:
@@ -1122,13 +1123,20 @@ def importDataset(path, name, overwrite=True, split: Union[str, Tuple[str, str],
                 sample["mask_path"] = ""
 
             dataset.add_sample(sample)
+            splits.add(split)
 
+        
         if importer.has_dataset_info:
             info = importer.get_dataset_info()
             # parse_info(dataset, info)
+
+    if Split.TRAIN.value in splits:
+            dataset.tags.append(Split.TRAIN.value)
+    if Split.TRAIN.TEST.value in splits:
+            dataset.tags.append(Split.TEST.value)
     return dataset, info
 
-def loadTrainingDataFolder(path, name):
+def loadTrainingDataFolder(path:Path, name:str) -> Tuple[fo.Dataset, None]:
     split = "train"
     dataset = fo.Dataset.from_dir(
         dataset_dir=path,
@@ -1149,7 +1157,7 @@ def loadTrainingDataFolder(path, name):
     info = None
     return dataset, info
 
-def loadPredictDataset(path, name="pred", transform=None, imageSize=(256,256)):
+def loadPredictDataset(path:Path, name:str="pred", transform=None, imageSize:Tuple[int,int]=(256,256)):
     split = "pred"
     dataset = fo.Dataset.from_dir(
         dataset_dir=path,
