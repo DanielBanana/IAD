@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from cv2.typing import MatLike
-from imageProcessing import ROI_Descriptor
+from inImageMeasuring.imageProcessing import ROI_Descriptor
 
 @dataclass
 class AnwesenheitsKontrolle():
