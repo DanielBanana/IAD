@@ -45,7 +45,7 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
 
     # If the configs should be copied create the folder and copy the general config
     if copyPath is not None:
-        copyPath = copyPath / modelConfig["model"]
+        copyPath = copyPath / modelConfig["model"]["class_path"]
         if copyPath is not None:
             if not copyPath.exists():
                 copyPath.mkdir()
@@ -53,22 +53,22 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
             shutil.copy2(config_path, copyPath / configFileName)
 
     # Read the preprocessor and copy if desired
-    if modelConfig["pre_processor_path"]:
-        transform = load_transform_from_yaml(modelConfig["pre_processor_path"], copyPath=copyPath)
-        modelConfig["pre_processor"] = PreProcessor(transform)
+    if modelConfig["model"]["init_args"]["pre_processor_path"]:
+        transform = load_transform_from_yaml(modelConfig["model"]["init_args"]["pre_processor_path"], copyPath=copyPath)
+        modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor(transform)
     else:
-        modelConfig["pre_processor"] = PreProcessor()
+        modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor()
 
     # Read the Postprocessor and copy if desired
-    if modelConfig["post_processor_path"]:
-        with open(modelConfig["post_processor_path"], 'r') as f:
+    if modelConfig["model"]["init_args"]["post_processor_path"]:
+        with open(modelConfig["model"]["init_args"]["post_processor_path"], 'r') as f:
             postProcessorConfig = yaml.safe_load(f)
-        configFileName = modelConfig["post_processor_path"].split(os.sep)[-1]
+        configFileName = modelConfig["model"]["init_args"]["post_processor_path"].split(os.sep)[-1]
         if copyPath is not None:
             shutil.copy2(config_path, os.path.join(copyPath, configFileName))
-        modelConfig["post_processor"] = PostProcessor(**postProcessorConfig)
+        modelConfig["model"]["init_args"]["post_processor"] = PostProcessor(**postProcessorConfig)
     else:
-        modelConfig["post_processor"] = PostProcessor(
+        modelConfig["model"]["init_args"]["post_processor"] = PostProcessor(
             enable_normalization=True,
             enable_threshold_matching=True,
             enable_thresholding=True,
@@ -76,7 +76,7 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
             pixel_sensitivity=0.01
         )
 
-    modelConfig["visualizer"] = ImageVisualizer(# output_dir=prediction_path,
+    modelConfig["model"]["init_args"]["visualizer"] = ImageVisualizer(# output_dir=prediction_path,
                                 fields=["image", "gt_mask"],
                                 overlay_fields=[("image", ["anomaly_map"]), ("image", ["pred_mask"])],
                                 field_size=(256,256),
@@ -84,13 +84,13 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
                                 overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
                                 text_config=DEFAULT_TEXT_CONFIG)
 
-    if modelConfig["evaluator_path"]:
+    if modelConfig["model"]["init_args"]["evaluator_path"]:
         if copyPath is not None:
-            configFileName = modelConfig["evaluator_path"].split(os.sep)[-1]
+            configFileName = modelConfig["model"]["init_args"]["evaluator_path"].split(os.sep)[-1]
             shutil.copy2(config_path, os.path.join(copyPath, configFileName))
-        modelConfig["evaluator"] = Evaluator(*load_metrics_from_yaml(modelConfig["evaluator_path"]))
+        modelConfig["model"]["init_args"]["evaluator"] = Evaluator(*load_metrics_from_yaml(modelConfig["model"]["init_args"]["evaluator_path"]))
     else:
-        modelConfig["evaluator"] = getDefaultEvaluator()
+        modelConfig["model"]["init_args"]["evaluator"] = getDefaultEvaluator()
     return modelConfig
 
 def load_transform_from_yaml(configPath, copyPath=None):
