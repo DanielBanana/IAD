@@ -7,9 +7,65 @@ import unittest
 from unittest.mock import Mock, patch, MagicMock
 import numpy as np
 import cv2
+from src.IAD import IAD
 
 # Add parent directory to path for absolute import
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+class TestIAD(unittest.TestCase):
+    """Test suite for the anomaly detection class
+
+    Arguments:
+        unittest -- _description_
+    """
+    def setUp(self) -> None:
+        # os.environ["FIFTYONE_DATABASE_URI"] = "mongodb://localhost"
+        # os.environ["WANDB_API_KEY"] = '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'
+        # wandb.login()
+        self.iad = IAD()
+        self.modelName = "padim.yaml"
+
+
+    def test_generateModel(self):
+        self.iad.generateModel(self.modelName)
+
+    def test_loadFromDisk(self):
+        datasetPath1 = Path(os.path.join("datasets", "traintest"))
+        self.iad.loadDatasetFromDisk(datasetPath1, "traintest", overwrite=False, merge=False)
+
+    def test_loadFromDB(self):
+        # iad.launchSession()
+        datasetPath2 = Path(os.path.join("datasets", "traintest"))
+        self.iad.loadDatasetFromDisk(datasetPath2, "traintest", overwrite=False, merge=False)
+        self.iad.loadDatasetFromDatabase("traintest")
+
+    def test_overwriteDate(self):
+        datasetPath2 = Path(os.path.join("datasets", "traintest"))
+        self.iad.loadDatasetFromDisk(datasetPath2, "traintest", overwrite=False, merge=False)
+        self.iad.loadDatasetFromDisk(datasetPath2, "traintest", overwrite=True, merge=False)
+
+    def test_mergeData(self):
+        datasetPath2 = Path(os.path.join("datasets", "traintest"))
+        self.iad.loadDatasetFromDisk(datasetPath2, "traintest", overwrite=False, merge=False)
+        datasetPath2 = Path(os.path.join("datasets", "MVTecADShort"))
+        self.iad.loadDatasetFromDisk(datasetPath2, "MVTecADShort", overwrite=False, merge=True)
+
+    def test_copyFiles(self):
+        self.iad.adjustOutputPath()
+        self.iad.copyFilesToOutputPath()
+        assert (self.iad.outputPath/self.modelName).exists()
+
+    def test_Tiling(self):
+        self.iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
+
+    def test_loadCheckpoint(self):
+        self.iad.loadCheckpoint(Path("test/MVTecADShort/bottle/padim/checkpoints/best.ckpt"))
+
+
+        #iad.launchSession()
+        # iad.loadCheckpoint(Path("results/MVTecADShort/bottle/padim/checkpoints/best.ckpt"))
+        iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
+        iad.train(Path("configs/padim_Training.yaml"), tiling=True)
 
 
 class TestAnomalyBoxes(unittest.TestCase):
