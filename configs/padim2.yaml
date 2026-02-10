@@ -1,0 +1,27 @@
+model:
+  class_path : Padim
+  init_args:
+    backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
+    layers: ["layer1", "layer2", "layer3"]
+    pre_trained: true
+    n_features: 100  # Default for resnet18
+    # Non-primitive types: reference other YAML files
+    pre_processor_path: "configs/PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "configs/PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "configs/Evaluator.yaml"  # or set to false to disable
+trainer:
+  train_batch_size: 1
+  eval_batch_size: 1
+  max_epochs: 1 # PaDiM only needs 1 epoch
+  max_workers: 8
+  test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
+  test_split_ratio: 0.2
+  val_split_mode: "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
+  val_split_ratio: 0.5 # not used if same_as_text
+  max_epochs: 1
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        patience: 10
+        monitor: pixel_val_AUROC
+        mode: max
