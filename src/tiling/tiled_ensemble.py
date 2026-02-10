@@ -3,7 +3,7 @@
 
 """Tiled ensemble training pipeline."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 from anomalib.data.utils import ValSplitMode
 
@@ -71,7 +71,11 @@ from anomalib.pre_processing import PreProcessor
 from anomalib.metrics.evaluator import Evaluator
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler, TileCollater
-import os
+
+from tiling.ensemble_engine import AOITiledEnsembleEngine
+from tiling.jobs import AOIStatisticsJobGenerator
+from anomalib.utils.logging import redirect_logs
+
 
 
 
@@ -84,7 +88,7 @@ class TrainTiledEnsemble(Pipeline):
         self.datamodule_args = None
         self.dataset = None
 
-    def _setup_runners(self, args: dict) -> list[Runner]:
+    def _setup_runners(self, args: dict) -> List[Runner]:
         """Setup the runners for the pipeline.
 
         This pipeline consists of training and validation steps:
@@ -92,13 +96,14 @@ class TrainTiledEnsemble(Pipeline):
         > (optionally) smoothing seams > calculation of post-processing statistics
 
         Returns:
-            list[Runner]: List of runners executing tiled ensemble train + val jobs.
+            List[Runner]: List of runners executing tiled ensemble train + val jobs.
         """
-        runners: list[Runner] = []
-
+        runners: List[Runner] = []
+        # self.root_dir = AOITiledEnsembleEngine.setup_ensemble_workspace(args) # Path(args["default_root_dir"]) / model_name / dataset_name / category / v_(versionNr)
+        self.root_dir = args["rootDir"]
         if self.datamodule_args is not None:
+            # Overwrite data arguments with given datamodule args (Assuming if they are given that they are more important)
             args["data"] = self.datamodule_args
-        self.root_dir = TiledEnsembleEngine.setup_ensemble_workspace(args) # Path(args["default_root_dir"]) / model_name / dataset_name / category / v_(versionNr)
 
         seed:int = args["seed"]
         accelerator = args["accelerator"]
@@ -107,19 +112,10 @@ class TrainTiledEnsemble(Pipeline):
         normalization_stage = NormalizationStage(args["normalization_stage"])
         model_args = args["TrainModels"]["model"] # TODO: Example pipeline is really simple in the amount and type of model arguments
 
-        # valSplitMode = None
-        # if data_args is not None:
-        #     init_args = data_args.get("init_args", None)
-        #     if init_args is not None:
-        #         valSplitMode = init_args.get("val_split_mode", None)
-
-        # if valSplitMode is None:
-        if self.datamodule is not None:
-            self.data_args = {"name": {"init_args":self.datamodule.name}}
-            valSplitMode = self.datamodule.val_split_mode
-        else:
-            print("Neither data_args nor datamodule given; Quitting.")
-            exit(1)
+        if data_args is None:
+            raise AttributeError("Neither data_args nor datamodule given; Quitting.")
+        
+        valSplitMode = data_args["init_args"]["val_split_mode"]
 
         train_job_generator = TrainModelJobGenerator(
             seed=seed,
@@ -197,7 +193,7 @@ class TrainTiledEnsemble(Pipeline):
             )
 
         # 5. calculate statistics used for inference
-        runners.append(SerialRunner(StatisticsJobGenerator(self.root_dir)))
+        runners.append(SerialRunner(AOIStatisticsJobGenerator(self.root_dir)))
 
         return runners
 
@@ -225,6 +221,28 @@ class TrainTiledEnsemble(Pipeline):
     def setFODataset(self, dataset:fo.Dataset) -> None:
         self.dataset = dataset
 
+    def run(self, args: dict, logFile) -> None:
+        """Run the pipeline.
+
+        Args:
+            args (Namespace): Arguments to run the pipeline. These are the args returned by ArgumentParser.
+        """
+        runners:List[Runner] = self._setup_runners(args)
+        redirect_logs(logFile) # dont know what it does
+        previous_results: PREV_STAGE_RESULT = None
+
+        for runner in runners:
+            try:
+                job_args = args.get(runner.generator.job_class.name)
+                previous_results = runner.run(job_args or {}, previous_results)
+            except Exception:  # noqa: PERF203 catch all exception and allow try-catch in loop
+                logger.exception("An error occurred when running the runner.")
+                print(
+                    f"There were some errors when running {runner.generator.job_class.name} with"
+                    f" {runner.__class__.__name__}."
+                    f" Please check {logFile} for more details.",
+                )
+
 
 class EvalTiledEnsemble(Pipeline):
     """Tiled ensemble evaluation pipeline.
@@ -239,8 +257,7 @@ class EvalTiledEnsemble(Pipeline):
         self.datamodule_args = None
         self.dataset = None
 
-
-    def _setup_runners(self, args: dict) -> list[Runner]:
+    def _setup_runners(self, args: dict) -> List[Runner]:
         """Set up the runners for the pipeline.
 
         This pipeline consists of jobs used to test/evaluate tiled ensemble:
@@ -249,9 +266,9 @@ class EvalTiledEnsemble(Pipeline):
         > Visualisation of predictions > Metrics calculation.
 
         Returns:
-            list[Runner]: List of runners executing tiled ensemble testing jobs.
+            List[Runner]: List of runners executing tiled ensemble testing jobs.
         """
-        runners: list[Runner] = []
+        runners: List[Runner] = []
 
         if self.datamodule_args is not None:
             args["data"] = self.datamodule_args
@@ -364,6 +381,28 @@ class EvalTiledEnsemble(Pipeline):
     def setFODataset(self, dataset):
         self.dataset = dataset
 
+    def run(self, args: dict, logFile) -> None:
+        """Run the pipeline.
+
+        Args:
+            args (Namespace): Arguments to run the pipeline. These are the args returned by ArgumentParser.
+        """
+        runners:List[Runner] = self._setup_runners(args)
+        redirect_logs(logFile) # dont know what it does
+        previous_results: PREV_STAGE_RESULT = None
+
+        for runner in runners:
+            try:
+                job_args = args.get(runner.generator.job_class.name)
+                previous_results = runner.run(job_args or {}, previous_results)
+            except Exception:  # noqa: PERF203 catch all exception and allow try-catch in loop
+                logger.exception("An error occurred when running the runner.")
+                print(
+                    f"There were some errors when running {runner.generator.job_class.name} with"
+                    f" {runner.__class__.__name__}."
+                    f" Please check {logFile} for more details.",
+                )
+
 """Tiled ensemble - ensemble training job."""
 
 class TrainModelJob(Job):
@@ -408,16 +447,16 @@ class TrainModelJob(Job):
     def run(
         self,
         task_id: int | None = None,
-    ) -> TiledEnsembleEngine:
+    ) -> AOITiledEnsembleEngine:
         """Run train job that fits the model for given tile location.
 
         Args:
             task_id: Passed when job is ran in parallel.
 
         Returns:
-            TiledEnsembleEngine: Engine containing trained model.
+            AOITiledEnsembleEngine: Engine containing trained model.
         """
-        devices: str | list[int] = "auto"
+        devices: str | List[int] = "auto"
         if task_id is not None:
             devices = [task_id]
             logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
@@ -440,11 +479,11 @@ class TrainModelJob(Job):
         return engine
 
     @staticmethod
-    def collect(results: list[TiledEnsembleEngine]) -> dict[tuple[int, int], TiledEnsembleEngine]:
+    def collect(results: List[AOITiledEnsembleEngine]) -> dict[tuple[int, int], AOITiledEnsembleEngine]:
         """Collect engines from each tile location into a dict.
 
         Returns:
-            dict[tuple[int, int], TiledEnsembleEngine]: Dict has form {tile_index: TiledEnsembleEngine}
+            dict[tuple[int, int], AOITiledEnsembleEngine]: Dict has form {tile_index: AOITiledEnsembleEngine}
         """
         return {r.tile_index: r for r in results}
 
@@ -549,7 +588,7 @@ class PredictJob(Job):
         normalization_stage (str): Normalization stage flag.
         dataloader (DataLoader): Dataloader to use for training (either val or test).
         model (AnomalyModule): Model to train.
-        engine (TiledEnsembleEngine | None):
+        engine (AOITiledEnsembleEngine | None):
             engine from train job. If job is used standalone, instantiate engine and model from checkpoint.
         ckpt_path (Path | None): Path to checkpoint to be loaded if engine doesn't contain correct weights.
 
@@ -566,7 +605,7 @@ class PredictJob(Job):
         normalization_stage: str,
         dataloader: DataLoader,
         model: AnomalibModule | None,
-        engine: TiledEnsembleEngine | None,
+        engine: AOITiledEnsembleEngine | None,
         ckpt_path: Path | None,
     ) -> None:
         super().__init__()
@@ -594,9 +633,9 @@ class PredictJob(Job):
             task_id: Passed when job is ran in parallel.
 
         Returns:
-            tuple[tuple[int, int], list[Any]]: Tile index, List of predictions.
+            tuple[tuple[int, int], List[Any]]: Tile index, List of predictions.
         """
-        devices: str | list[int] = "auto"
+        devices: str | List[int] = "auto"
         if task_id is not None:
             devices = [task_id]
             logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
@@ -619,7 +658,7 @@ class PredictJob(Job):
         return self.tile_index, predictions
 
     @staticmethod
-    def collect(results: list[tuple[tuple[int, int], list[Any]]]) -> EnsemblePredictions:
+    def collect(results: List[tuple[tuple[int, int], List[Any]]]) -> EnsemblePredictions:
         """Collect predictions from each tile location into the predictions class.
 
         Returns:
@@ -648,7 +687,7 @@ class FOPredictJob(Job):
         normalization_stage (str): Normalization stage flag.
         dataloader (DataLoader): Dataloader to use for training (either val or test).
         model (AnomalyModule): Model to train.
-        engine (TiledEnsembleEngine | None):
+        engine (AOITiledEnsembleEngine | None):
             engine from train job. If job is used standalone, instantiate engine and model from checkpoint.
         ckpt_path (Path | None): Path to checkpoint to be loaded if engine doesn't contain correct weights.
 
@@ -666,7 +705,7 @@ class FOPredictJob(Job):
         dataloader,
         foDataset,
         model: AnomalibModule | None,
-        engine: TiledEnsembleEngine | None,
+        engine: AOITiledEnsembleEngine | None,
         ckpt_path: Path | None,
         key: str,
     ) -> None:
@@ -696,9 +735,9 @@ class FOPredictJob(Job):
             task_id: Passed when job is ran in parallel.
 
         Returns:
-            tuple[tuple[int, int], list[Any]]: Tile index, List of predictions.
+            tuple[tuple[int, int], List[Any]]: Tile index, List of predictions.
         """
-        devices: str | list[int] = "auto"
+        devices: str | List[int] = "auto"
         if task_id is not None:
             devices = [task_id]
             logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
@@ -732,7 +771,7 @@ class FOPredictJob(Job):
         return self.tile_index, predictions
 
     @staticmethod
-    def collect(results: list[tuple[tuple[int, int], list[Any]]]) -> EnsemblePredictions:
+    def collect(results: List[tuple[tuple[int, int], List[Any]]]) -> EnsemblePredictions:
         """Collect predictions from each tile location into the predictions class.
 
         Returns:
@@ -793,13 +832,13 @@ class PredictJobGenerator(JobGenerator):
 
         Args:
             args (dict): Dict with config passed to training.
-            prev_stage_result (dict[tuple[int, int], TiledEnsembleEngine] | None):
+            prev_stage_result (dict[tuple[int, int], AOITiledEnsembleEngine] | None):
                 if called after train job this contains engines with individual models, otherwise load from checkpoints.
 
         Returns:
             Generator[PredictJob, None, None]: PredictJob generator.
         """
-        del args  # args not used here
+        # del args  # args not used here
 
         # tiler used for splitting the image and getting the tile count
         tiler = get_ensemble_tiler(self.tiling_args)
@@ -836,7 +875,9 @@ class PredictJobGenerator(JobGenerator):
                 )
                 tile_i, tile_j = tile_index
                 # prepare checkpoint path for model on current tile location
-                ckpt_path = self.root_dir / "weights" / "lightning" / f"model{tile_i}_{tile_j}.ckpt"
+                
+                # ckpt_path = self.root_dir / "weights" / "lightning" / f"model{tile_i}_{tile_j}.ckpt"
+                ckpt_path = self.root_dir / "checkpoints" / f"model{tile_i}_{tile_j}.ckpt"
 
             # pick the dataloader based on predict data
             dataloader = datamodule.test_dataloader()
@@ -902,13 +943,13 @@ class FOPredictJobGenerator(JobGenerator):
 
         Args:
             args (dict): Dict with config passed to training.
-            prev_stage_result (dict[tuple[int, int], TiledEnsembleEngine] | None):
+            prev_stage_result (dict[tuple[int, int], AOITiledEnsembleEngine] | None):
                 if called after train job this contains engines with individual models, otherwise load from checkpoints.
 
         Returns:
             Generator[PredictJob, None, None]: PredictJob generator.
         """
-        del args  # args not used here
+        # del args  # args not used here
 
         # tiler used for splitting the image and getting the tile count
         tiler = get_ensemble_tiler(self.tiling_args)
@@ -945,7 +986,8 @@ class FOPredictJobGenerator(JobGenerator):
                 )
                 tile_i, tile_j = tile_index
                 # prepare checkpoint path for model on current tile location
-                ckpt_path = self.root_dir / "weights" / "lightning" / f"model{tile_i}_{tile_j}.ckpt"
+                # ckpt_path = self.root_dir / "weights" / "lightning" / f"model{tile_i}_{tile_j}.ckpt"
+                ckpt_path = self.root_dir / "checkpoints" / f"model{tile_i}_{tile_j}.ckpt"
 
             # pick the dataloader based on predict data
             dataloader = datamodule.test_dataloader()
@@ -1035,11 +1077,87 @@ def setup_transforms(datamodule: AnomalibDataModule, image_size: int | tuple[int
         if data_subset is not None:
             data_subset.augmentations = augmentations
 
+def update_model_for_ensemble(
+        model:AnomalibModule,
+        model_args: dict,
+        input_size: int | tuple[int, int],
+        normalization_stage: NormalizationStage,
+) -> AnomalibModule:
+    """Get a already existing model prepared for ensemble training.
+
+    Args:
+        model (AnomalyModule): model configuration.
+        model_args (dict): tiled ensemble model configuration.
+        input_size (int | tuple[int, int]): individual model input size.
+        normalization_stage (NormalizationStage): stage when normalization performed.
+
+    Returns:
+        AnomalyModule: model with input_size setup
+    """
+    if isinstance(input_size, int):
+        input_size = (input_size, input_size)
+
+    # pre_processor:PreProcessor|None = getattr(model, "pre_processor", None)
+    post_processor:PostProcessor|None = getattr(model, "post_processor", None)
+    evaluator:Evaluator|None = getattr(model, "evaluator", None)
+    # visualizer:Visualizer|None = getattr(model, "visualizer", None)
+
+    # create custom pre_processor with correct input size
+    # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
+    pre_processor = model.configure_pre_processor(input_size)
+    model_args.pop("pre_processor", None)
+    
+
+    if evaluator is None:
+        image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
+        pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
+        image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
+        pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
+        evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
+    else:
+        # Model contains an evaluator; We don't need the one inside the model_args
+        model_args.pop("evaluator", None)
+
+
+    if post_processor is not None:
+        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
+        post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
+        model_args.pop("post_processor", None)
+
+
+    # make actual model with correct input size
+    model: AnomalibModule = get_model(model_args,
+                                      pre_processor=pre_processor,
+                                      visualizer=False,
+                                      evaluator=evaluator,
+                                      post_processor=post_processor)
+    
+    # This part is taken from the get_ensemble_model from the anomalib creators; I don't know what it
+    if model.pre_processor is not None:
+        model_pre_processor: PreProcessor = model.pre_processor
+        # drop Resize in all cases since it gets copied to datamodule, and we don't want that!
+        pre_transforms = model_pre_processor.transform
+        if isinstance(pre_transforms, Resize):
+            update_transform = []
+        elif isinstance(pre_transforms, Compose):
+            update_transform = Compose([
+                transform for transform in pre_transforms.transforms if not isinstance(transform, Resize)
+            ])
+        elif pre_transforms is not None:
+            update_transform = pre_transforms
+        else:
+            update_transform = []
+
+        model_pre_processor.transform = update_transform
+        model_pre_processor.export_transform = get_exportable_transform(update_transform)
+
+    return model
 
 def get_ensemble_model(
-    model_args: dict,
+    model_args: dict[str,dict[str,Any]],
     input_size: int | tuple[int, int],
     normalization_stage: NormalizationStage,
+
 ) -> AnomalibModule:
     """Get model prepared for ensemble training.
 
@@ -1051,6 +1169,26 @@ def get_ensemble_model(
     Returns:
         AnomalyModule: model with input_size setup
     """
+
+    # make actual model with correct input size
+
+    # Take evaluator out of model args if possible
+    post_processor:PostProcessor|None = model_args["init_args"].pop("post_processor", None)
+    pre_processor = model_args["init_args"].pop("pre_processor", None)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
+    evaluator:Evaluator|None = model_args["init_args"].pop("evaluator", None)
+    _ = model_args["init_args"].pop("visualizer", None) 
+
+    if evaluator is None:
+        image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
+        pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
+        image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
+        pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
+        evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
+
+    if post_processor is not None:
+        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
+        post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
+        
     # first make temporary model to get object
     temp_model = get_model(model_args)
     if isinstance(input_size, int):
@@ -1058,13 +1196,9 @@ def get_ensemble_model(
     # create custom pre_proc with correct input size
     # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
     pre_processor = temp_model.configure_pre_processor(input_size)
-    # make actual model with correct input size
-    image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
-    pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
-    image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
-    pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
-    evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
-    model: AnomalibModule = get_model(model_args, pre_processor=pre_processor, visualizer=False, evaluator=evaluator)
+    
+    name = model_args["class_path"]
+    model: AnomalibModule = get_model(name, pre_processor=pre_processor, visualizer=False, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
     if model.pre_processor is not None:
         model_pre_processor: PreProcessor = model.pre_processor
 
@@ -1083,11 +1217,6 @@ def get_ensemble_model(
 
         model_pre_processor.transform = update_transform
         model_pre_processor.export_transform = get_exportable_transform(update_transform)
-
-    if model.post_processor is not None:
-        model_post_processor: PostProcessor = model.post_processor
-        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
-        model_post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
 
     return model
 
@@ -1137,10 +1266,10 @@ def parse_trainer_kwargs(trainer_args: dict | None) -> Namespace | dict:
 def get_ensemble_engine(
     tile_index: tuple[int, int],
     accelerator: str,
-    devices: list[int] | str | int,
+    devices: List[int] | str | int,
     root_dir: Path,
     trainer_args: dict | None = None,
-) -> TiledEnsembleEngine:
+) -> AOITiledEnsembleEngine:
     """Prepare engine for ensemble training or prediction.
 
     This method makes sure correct normalization is used, prepares metrics and additional trainer kwargs..
@@ -1148,12 +1277,12 @@ def get_ensemble_engine(
     Args:
         tile_index (tuple[int, int]): Index of tile that this model processes.
         accelerator (str): Accelerator (device) to use.
-        devices (list[int] | str | int): device IDs used for training.
+        devices (List[int] | str | int): device IDs used for training.
         root_dir (Path): Root directory to save checkpoints, stats and images.
         trainer_args (dict): Trainer args dictionary. Empty dict if not present.
 
     Returns:
-        TiledEnsembleEngine: set up engine for ensemble training/prediction.
+        AOITiledEnsembleEngine: set up engine for ensemble training/prediction.
     """
     # parse additional trainer args and callbacks if present in config
     trainer_kwargs = parse_trainer_kwargs(trainer_args)
@@ -1163,7 +1292,7 @@ def get_ensemble_engine(
     trainer_kwargs.pop("devices", None)
 
     # create engine for specific tile location
-    engine = TiledEnsembleEngine(
+    engine = AOITiledEnsembleEngine(
         tile_index=tile_index,
         accelerator=accelerator,
         devices=devices,
@@ -1188,7 +1317,7 @@ def get_threshold_values(normalization_stage: NormalizationStage, root_dir: Path
         tuple[float, float]: image and pixel threshold.
     """
     if normalization_stage == NormalizationStage.NONE:
-        stats_path = root_dir / "weights" / "lightning" / "stats.json"
+        stats_path = root_dir /"checkpoints" / "stats.json"
         with stats_path.open("r") as f:
             stats = json.load(f)
         image_threshold = stats["image_threshold"]
@@ -1199,3 +1328,4 @@ def get_threshold_values(normalization_stage: NormalizationStage, root_dir: Path
         pixel_threshold = 0.5
 
     return image_threshold, pixel_threshold
+
