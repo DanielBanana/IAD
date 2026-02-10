@@ -1,11 +1,23 @@
-# Model configuration
-model: "PaDiM" # For referencing in logs, saved models, etc.
-backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
-layers: ["layer1", "layer2", "layer3"]
-pre_trained: true
-n_features: 100  # Default for resnet18
+# # Model configuration
+# model: "PaDiM" # For referencing in logs, saved models, etc.
+# backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
+# layers: ["layer1", "layer2", "layer3"]
+# pre_trained: true
+# n_features: 100  # Default for resnet18
 
-# Non-primitive types: reference other YAML files
-pre_processor_path: "configs/PreProcessor.yaml"  # or set to false to disable
-post_processor_path: "configs/PostProcessor.yaml"  # or set to false to disable
-evaluator_path: "configs/Evaluator.yaml"  # or set to false to disable
+# # Non-primitive types: reference other YAML files
+# pre_processor_path: "configs/PreProcessor.yaml"  # or set to false to disable
+# post_processor_path: "configs/PostProcessor.yaml"  # or set to false to disable
+# evaluator_path: "configs/Evaluator.yaml"  # or set to false to disable
+
+model:
+  class_path : Padim
+  init_args:
+    backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
+    layers: ["layer1", "layer2", "layer3"]
+    pre_trained: true
+    n_features: 100  # Default for resnet18
+    # Non-primitive types: reference other YAML files
+    pre_processor_path: "configs/PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "configs/PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "configs/Evaluator.yaml"  # or set to false to disable
