@@ -12,7 +12,7 @@ from anomalib.engine import Engine
 from anomalib.models import Padim, Patchcore, Stfpm
 from AnomalyDataset import FODataModule
 
-from TiledEnsemble import TrainTiledEnsemble, EvalTiledEnsemble
+from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble
 from AnomalyDataset import importDataset, FODataModule
 import argparse
 import os
