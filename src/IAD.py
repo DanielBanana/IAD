@@ -51,7 +51,7 @@ from visualisation import clipEmbedding, resnetEmbedding
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG, ENGINE_PARAMS, DATAMODULE_PARAMS
 from Training import run_inference, train_and_export_model, setupModel
 from cameraProcessor import CameraProcessor
-from TiledEnsemble import TrainTiledEnsemble
+from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble
 from utils import find_first_file, exclude_from_logger, loadConfig
 
 os.environ["TRUST_REMOTE_CODE"] = "1"
@@ -79,6 +79,10 @@ class IAD():
         self.categories:List[str]|None = None
 
         self.modelConfigPath:Path|None = None
+        self.preProcessorPath:Path|None = None
+        self.postProcessorPath:Path|None = None
+        self.evaluatorPath:Path|None = None
+        self.visualizerPath:Path|None = None
         self.modelConfig:dict[str, Any]|None = None
         self.modelName:str|None = None
         self.model:AnomalibModule|None = None
@@ -106,8 +110,9 @@ class IAD():
         self.version:int = 0
         self.versionName:str = "version"
         self.runDir:Path|None = None
+        self.ckptDir:Path|None = None
+        self.ckptFileName:str = "best.ckpt"
         self.ckptPath:Path|None = None
-        self.ckptFileName:str = "best"
 
         self.weightsPath:Path|None = None
         
@@ -162,6 +167,11 @@ class IAD():
                 self.model.visualizer.output_dir = outputPath / "imagesByLabels"
             else:
                 print("No model set; Cant adjust path for visualiser (saving result images to disk)")
+        if self.isTilingSetup:
+            outputPath /= "tiled"
+
+        self.ckptDir = outputPath / "checkpoints"
+        self.ckptPath = self.ckptDir / self.ckptFileName
 
         self.outputPath = outputPath
         return outputPath
@@ -181,17 +191,15 @@ class IAD():
         self.modelConfigPath = modelConfigPath
 
         self.modelConfig = loadConfig(self.modelConfigPath)
-        self.postProcessorPath = self.modelConfig["post_processor_path"]
-        self.preProcessorPath = self.modelConfig["pre_processor_path"]
-        self.evaluatorPath = self.modelConfig["evaluator_path"]
-        self.modelConfig.pop("post_processor_path")
-        self.modelConfig.pop("pre_processor_path")
-        self.modelConfig.pop("evaluator_path")
 
-        self.modelName = self.modelConfig.pop("model").lower()
+        self.modelName = self.modelConfig["model"].get("class_path").lower()
+
+        self.postProcessorPath = self.modelConfig["model"]["init_args"].pop("post_processor_path",None)
+        self.preProcessorPath = self.modelConfig["model"]["init_args"].pop("pre_processor_path",None)
+        self.evaluatorPath = self.modelConfig["model"]["init_args"].pop("evaluator_path",None)
 
         print(f"Model {self.modelName} loaded: {self.modelConfig}")
-        self.model = create_model(self.modelName, self.modelConfig)
+        self.model = create_model(self.modelName, self.modelConfig["model"]["init_args"])
         print(f"Model {self.model} created.")
 
     def loadTrainedModel(self, folder:Path) -> None:
@@ -336,11 +344,15 @@ class IAD():
         # If the configs should be copied create the folder and copy the general config    
         if not path.exists():
             path.mkdir(parents=True)
+
+        # Copy the modelConfig file if possible
         if self.modelConfigPath is not None:
-            _, configFileName = os.path.split(path)
+            _, configFileName = os.path.split(self.modelConfigPath)
             shutil.copy2(self.modelConfigPath, path / configFileName)
         else:
             raise AttributeError(f"Model config path is empty. Load model before calling this function!")
+        if self.preProcessorPath is not None:
+
     
     def copyFilesToOutputPath(self):
         self.copyFilesToPath(self.outputPath)
@@ -366,8 +378,6 @@ class IAD():
                 print(f"Category found in categories for this dataset:")
                 self.category = category
 
-
-
     #####
     # Logging
     #####
@@ -384,12 +394,12 @@ class IAD():
 
     def setupCallbacks(self, path:Path):
         # self.runDir:Path = Path(os.path.join(self.outputPath, runName, f"version_{version}"))
-        self.ckptPath = path / "checkpoints"
-        if not os.path.exists(self.ckptPath):
-            os.mkdir(self.ckptPath)
+        # self.ckptDir = path / "checkpoints"
+        if not os.path.exists(self.ckptDir):
+            os.mkdir(self.ckptDir)
 
         checkpointCallback = ModelCheckpoint(
-            dirpath=self.ckptPath,
+            dirpath=self.ckptDir,
             filename=self.ckptFileName,
             monitor="image_F1AdaptiveThreshold",  # val_loss not found?
             verbose=True,
@@ -397,6 +407,7 @@ class IAD():
             mode="min",  # Save the model with the minimum training loss,
             enable_version_counter=False
         )
+        # self.ckptPath = self.ckptDir / self.ckptFileName
         
         # graphCallback = GraphLogger()
         timerCallback = TimerCallback()
@@ -418,9 +429,6 @@ class IAD():
             offline=False,
             entity="daniel-pommer-technische-hochschule-n-rnberg-georg-simon-ohm",
         )
-
-
-
 
     #####
     # Training
@@ -479,15 +487,14 @@ class IAD():
             # )
 
             # self.runLogger = self.setupRunLogging(runName=self.runName, runDir=self.runDir)
-            self.setupCallbacks(self.outputPath)
-            self.setupWandBLogger(self.runName, self.outputPath, self.version)
-            if tiling:
-                self._trainTiledModel(self.trainingConfig)
-            else:
-                self._trainSingleModel(self.trainingConfig)
+        self.setupCallbacks(self.outputPath)
+        self.setupWandBLogger(self.runName, self.outputPath, self.version)
+        if tiling:
+            self._trainTiledModel(self.trainingConfig)
+        else:
+            self._trainSingleModel(self.trainingConfig)
 
     def _trainSingleModel(self, trainingConfig:dict[str, Any]):
-
         self._checkBeforeTraining()
         self.engineParams = {key: trainingConfig[key] for key in ENGINE_PARAMS if key in trainingConfig}
         self.datamoduleParams = {key: trainingConfig[key] for key in DATAMODULE_PARAMS if key in trainingConfig}
@@ -495,37 +502,103 @@ class IAD():
         self.engine = Engine(callbacks=list(self.callbacks.values()), logger=self.runLogger, **self.engineParams)
         self.engine.fit(model=self.model, datamodule=self.datamodule)
 
-
         print("Running inference on dataset...")
         with exclude_from_logger():
             run_inference(self.dataset, self.engine, self.modelName)
 
         self.currentSession = fo.launch_app(self.dataset)
 
-        
-    def _trainTiledModel(self, trainingConfig:dict[str, Any]):
+    def _trainTiledModel(self, config:dict[str, Any]):
         self._checkBeforeTraining()
 
-        self.datamoduleParams = {key: trainingConfig[key] for key in DATAMODULE_PARAMS if key in trainingConfig}
+        # Setup datamodule for the tiling 
+        self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
         self.datamodule = self._setupDatamodule(self.datamoduleParams)
 
-        # 2. Convert the dictionary to an Namespace object
-
-        parser = argparse.ArgumentParser(description="Run tiled ensemble training and evaluation.")
-        parser.add_argument(
-            "--config",
-            type=str,
-            default="configs/TiledEnsemble.yaml",
-            help="Path to the configuration file or config string."
-        )
-        args = parser.parse_args()
-        tilingConfigNamespace:Namespace = Namespace(**self.tilingConfigDict)
+        self.adjustOutputPath()
+        self.tilingConfigDict = self.parseTilingConfig(self.tilingConfigPath)
         trainPipeline = TrainTiledEnsemble()
         trainPipeline.setDatamodule(datamodule=self.datamodule)
-        # trainPipeline.run(tilingConfigNamespace) # TODO fork pipeline from anomalib to accept config instead of argparse parser args
-        trainPipeline.run(args)
+        if self.model:
+            self.tilingConfigDict["TrainModels"]["model"]["class_path"] = "Padim"
+            self.tilingConfigDict["TrainModels"]["model"]["init_args"] = self.modelConfig
+        trainPipeline.run(self.tilingConfigDict, self.logFileNameGeneral)
+        # trainPipeline.run(args)
         self.trainPipeline = trainPipeline
-        return trainPipeline
+        return self.trainPipeline
+    
+    def eval(self, trainingConfigPath:Path, tiling:bool=False):
+        if not self._checkBeforeTraining():
+            exit(1)
+        if not trainingConfigPath.suffix == ".yaml":
+            FileNotFoundError("Config file needs to have .yaml suffix")
+        if not trainingConfigPath.exists():
+            FileNotFoundError("Error: .yaml config file not found in configs folder.")
+        if tiling and not self.isTilingSetup:
+            AttributeError("tiling is not setup: Call 'setupTiling()")
+
+        with open(trainingConfigPath, 'r') as f:
+            self.trainingConfig = yaml.safe_load(f) 
+        if self.category is not None:
+            self.runName = f"{self.modelName}-{self.datasetName}-{self.category}"
+        else:
+            self.runName =f"{self.modelName}-{self.datasetName}"
+
+        self.setupCallbacks(self.outputPath)
+        self.setupWandBLogger(self.runName, self.outputPath, self.version)
+        if tiling:
+            self._evalTiledModel(self.trainingConfig)
+        else:
+            self._evalSingleModel(self.trainingConfig)
+        
+    def _evalTiledModel(self, config:dict[str, Any]):
+        # Setup datamodule for the tiling 
+        self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
+        self.datamodule = self._setupDatamodule(self.datamoduleParams)
+
+        self.adjustOutputPath()
+
+        print("Running tiled ensemble test pipeline.")
+        # pass the root dir from train run to load checkpoints
+        self.tilingConfigDict = self.parseTilingConfig(self.tilingConfigPath)
+        test_pipeline = EvalTiledEnsemble(self.tilingConfigDict["rootDir"])
+        test_pipeline.setDatamodule(datamodule=self.datamodule)
+        test_pipeline.run(self.tilingConfigDict, self.logFileNameGeneral)
+
+    def _evalSingleModel(self, config:dict[str, Any]):
+        self._checkBeforeTraining()
+        self.engineParams = {key: config[key] for key in ENGINE_PARAMS if key in config}
+        self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
+        self.datamodule = self._setupDatamodule(self.datamoduleParams)
+        self.engine = Engine(callbacks=list(self.callbacks.values()), logger=self.runLogger, **self.engineParams)
+        self.engine.predict(model=self.model, datamodule=self.datamodule)
+
+        # print("Running inference on dataset...")
+        # with exclude_from_logger():
+        #     run_inference(self.dataset, self.engine, self.modelName)
+
+        self.currentSession = fo.launch_app(self.dataset)
+
+    def parseTilingConfig(self, path:Path):
+        with Path(path).open(encoding="utf-8") as file:
+            tilingConfigDict = yaml.safe_load(file)
+        
+        rootDir:str|None = tilingConfigDict.get("rootDir", None)
+        if rootDir is None:
+            tilingConfigDict["rootDir"] = self.outputPath
+        else:
+            if rootDir == "":
+                tilingConfigDict["rootDir"] = self.outputPath
+
+        ckptPath:str|None = tilingConfigDict.get("ckptPath", None)
+        if ckptPath is None:
+            tilingConfigDict["ckptPath"] = self.ckptPath
+        else:
+            if ckptPath == "":
+                tilingConfigDict["ckptPath"] = self.ckptPath
+        self.isTilingSetup = True
+        return tilingConfigDict
+        
 
     #####
     # Export to Disk
@@ -586,8 +659,8 @@ if __name__ == "__main__":
     # datasetPath1 = Path(os.path.join("datasets", "traintest"))
     # iad.loadDatasetFromDisk(datasetPath1, "traintest", overwrite=False, merge=False)
     # iad.launchSession()
-    datasetPath2 = Path(os.path.join("datasets", "train"))
-    iad.loadDatasetFromDisk(datasetPath2, "train", overwrite=True, merge=False)
+    datasetPath2 = Path(os.path.join("datasets", "traintest"))
+    iad.loadDatasetFromDisk(datasetPath2, "traintest", overwrite=True, merge=False)
     # iad.launchSession()
     # iad.loadDatasetFromDatabase("MVTecADShort")
     if iad.dataset is None:
@@ -597,8 +670,11 @@ if __name__ == "__main__":
     iad.copyFilesToOutputPath()
     #iad.launchSession()
     # iad.loadCheckpoint(Path("results/MVTecADShort/bottle/padim/checkpoints/best.ckpt"))
-    iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
-    iad.train(Path("configs/padim_Training.yaml"), tiling=True)
+    # iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
+    # iad.train(Path("configs/padim_Training.yaml"), tiling=False)
+    if iad.ckptPath is not None:
+        iad.loadCheckpoint(iad.ckptPath)
+        iad.eval(Path("configs/padim_Training.yaml"), tiling=False)
     # iad.exportResults(Path("EXPORT_TEST"))
     # iad.exportDataset(Path("EXPORT_TEST"))
     shutdown = False
