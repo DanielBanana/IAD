@@ -4,7 +4,7 @@
 """Run tiled ensemble training."""
 
 # from anomalib.pipelines.tiled_ensemble import EvalTiledEnsemble, TrainTiledEnsemble
-from TiledEnsemble import TrainTiledEnsemble, EvalTiledEnsemble
+from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble
 from AnomalyDataset import importDataset, FODataModule
 import argparse
 import os
