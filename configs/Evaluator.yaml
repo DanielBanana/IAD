@@ -5,15 +5,6 @@ val_metrics:
   - type: "AUROC"
     fields: ["anomaly_map", "gt_mask"]
     prefix: "pixel_"
-  - type: "AUPR"
-    fields: ["pred_score", "gt_label"]
-    prefix: "image_"
-  - type: "AUPR"
-    fields: ["anomaly_map", "gt_mask"]
-    prefix: "pixel_"
-  - type: "F1AdaptiveThreshold"
-    fields: ["pred_score", "gt_label"]
-    prefix: "image_"
 
 test_metrics:
   - type: "AUROC"
