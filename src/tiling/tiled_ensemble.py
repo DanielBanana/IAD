@@ -17,8 +17,8 @@ from anomalib.pipelines.components.base import Pipeline, Runner
 from anomalib.pipelines.components.runners import ParallelRunner, SerialRunner
 
 from anomalib.pipelines.tiled_ensemble.components import (
-    MergeJobGenerator,
-    PredictJobGenerator,
+    # MergeJobGenerator,
+    # PredictJobGenerator,
     SmoothingJobGenerator,
     StatisticsJobGenerator
 )
@@ -73,7 +73,7 @@ from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler, TileCollater
 
 from tiling.ensemble_engine import AOITiledEnsembleEngine
-from tiling.jobs import AOIStatisticsJobGenerator
+from tiling.jobs import AOIStatisticsJobGenerator, AOIMergeJobGenerator
 from anomalib.utils.logging import redirect_logs
 
 
@@ -182,7 +182,7 @@ class TrainTiledEnsemble(Pipeline):
             )
 
         # 3. merge predictions
-        runners.append(SerialRunner(MergeJobGenerator(tiling_args=tiling_args, data_args=data_args)))
+        runners.append(SerialRunner(AOIMergeJobGenerator(tiling_args=tiling_args, data_args=data_args)))
 
         # 4. (optional) smooth seams
         if args["SeamSmoothing"]["apply"]:
@@ -323,7 +323,7 @@ class EvalTiledEnsemble(Pipeline):
                 ),
             )
         # 2. merge predictions
-        runners.append(SerialRunner(MergeJobGenerator(tiling_args=tiling_args, data_args=data_args)))
+        runners.append(SerialRunner(AOIMergeJobGenerator(tiling_args=tiling_args, data_args=data_args)))
 
         # 3. (optional) smooth seams
         if args["SeamSmoothing"]["apply"]:
@@ -1173,19 +1173,19 @@ def get_ensemble_model(
     # make actual model with correct input size
 
     # Take evaluator out of model args if possible
-    post_processor:PostProcessor|None = model_args["init_args"].pop("post_processor", None)
-    pre_processor = model_args["init_args"].pop("pre_processor", None)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
-    evaluator:Evaluator|None = model_args["init_args"].pop("evaluator", None)
+    post_processor:PostProcessor|bool = model_args["init_args"].pop("post_processor", False)
+    pre_processor:PreProcessor|bool = model_args["init_args"].pop("pre_processor", False)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
+    evaluator:Evaluator|bool = model_args["init_args"].pop("evaluator", False)
     _ = model_args["init_args"].pop("visualizer", None) 
 
-    if evaluator is None:
+    if not isinstance(evaluator, Evaluator):
         image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
         pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
         image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
         pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
         evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
 
-    if post_processor is not None:
+    if isinstance(post_processor, PostProcessor):
         # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
         post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
         
@@ -1198,6 +1198,8 @@ def get_ensemble_model(
     pre_processor = temp_model.configure_pre_processor(input_size)
     
     name = model_args["class_path"]
+
+
     model: AnomalibModule = get_model(name, pre_processor=pre_processor, visualizer=False, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
     if model.pre_processor is not None:
         model_pre_processor: PreProcessor = model.pre_processor
