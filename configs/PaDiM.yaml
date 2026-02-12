@@ -18,6 +18,6 @@ model:
     pre_trained: true
     n_features: 100  # Default for resnet18
     # Non-primitive types: reference other YAML files
-    pre_processor_path: "configs/PreProcessor.yaml"  # or set to false to disable
-    post_processor_path: "configs/PostProcessor.yaml"  # or set to false to disable
-    evaluator_path: "configs/Evaluator.yaml"  # or set to false to disable
+    # pre_processor_path: "PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "Evaluator.yaml"  # or set to false to disable

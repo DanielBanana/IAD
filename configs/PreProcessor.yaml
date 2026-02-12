@@ -1,8 +1,80 @@
 transform:
   - name: "Resize"
     args:
-      size: [256,256]
-  # - name: "Normalize"
-  #   args:
-  #     mean: [0.485, 0.456, 0.406]
-  #     std: [0.229, 0.224, 0.225]
+      size: [256,256]  # [height, width]
+  - name: "CenterCrop" 
+    args:
+      size: [224, 224]  # [height, width]
+  - name: "Normalize"
+    args:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+
+######################################
+# REFERENCE TRANSFORMS
+# TESTED TRANSFORMS ARE MARKED WITH $$
+
+# transform:
+#   # --- Resizing and Cropping --- 
+#   - name: "Resize" # $$
+#     args:
+#       size: [256, 256]  # [height, width]
+#   - name: "CenterCrop" # $$
+#     args:
+#       size: [224, 224]  # [height, width]
+
+#   - name: "RandomCrop"
+#     args:
+#       size: [224, 224]  # [height, width]
+
+#   - name: "RandomResizedCrop"
+#     args:
+#       size: [224, 224]  # [height, width]
+#       scale: [0.8, 1.0] # Range of area of the original size to crop
+#       ratio: [0.9, 1.1] # Range of aspect ratio of the crop
+
+#   # --- Flipping ---
+#   - name: "RandomHorizontalFlip"
+#     args:
+#       p: 0.5  # Probability of flip (default: 0.5)
+
+#   - name: "RandomVerticalFlip"
+#     args:
+#       p: 0.5  # Probability of flip (default: 0.5)
+
+#   # --- Color and Contrast ---
+#   - name: "ColorJitter"
+#     args:
+#       brightness: 0.2  # How much to jitter brightness
+#       contrast: 0.2    # How much to jitter contrast
+#       saturation: 0.2  # How much to jitter saturation
+#       hue: 0.1         # How much to jitter hue
+
+#   - name: "Grayscale"
+#     args:
+#       num_output_channels: 1  # Output channels (default: 1)
+
+#   # --- Noise ---
+#   - name: "GaussianBlur"
+#     args:
+#       kernel_size: [5, 9]  # Range of kernel sizes
+#       sigma: [0.1, 5.0]    # Range of standard deviations
+
+#   # --- Normalization ---
+#   - name: "Normalize" # $$
+#     args:
+#       mean: [0.485, 0.456, 0.406]  # Mean for each channel (RGB)
+#       std: [0.229, 0.224, 0.225]   # Std for each channel (RGB)
+
+#   # --- Format Conversion ---
+#   - name: "ToTensor"
+#     args: {}  # No arguments required
+
+#   - name: "ToPILImage"
+#     args: {}  # No arguments required
+
+#   # --- Utility ---
+#   - name: "Lambda"
+#     args:
+#       lambd: "lambda x: x * 255"  # Custom lambda function (string)
