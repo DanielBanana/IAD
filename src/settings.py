@@ -32,7 +32,7 @@ CATEGORIES = {
     "btech": ["01",
               "02",
               "03"]}
-MODELS = ["efficientad-s", "efficientad-m", "patchcore", "fastflow", "dsr", "reverse_distillation", "rd", "stfpm"]     # TODO GLASS(not in anomalib)
+MODELS = ["efficientad-s", "efficientad-m", "patchcore", "fastflow", "dsr", "reverse_distillation", "rd", "stfpm", "Padim"]     # TODO GLASS(not in anomalib)
 
 DEFAULT_FIELDS_CONFIG = {
     "image": {},
