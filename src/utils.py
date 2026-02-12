@@ -43,6 +43,9 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
     with open(config_path, 'r') as f:
         modelConfig = yaml.safe_load(f)
 
+    # Directory where the config lies; it is assumed the other config files are in that folder as well
+    configDir:Path = config_path.parent
+
     # If the configs should be copied create the folder and copy the general config
     if copyPath is not None:
         copyPath = copyPath / modelConfig["model"]["class_path"]
@@ -53,17 +56,24 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
             shutil.copy2(config_path, copyPath / configFileName)
 
     # Read the preprocessor and copy if desired
-    if modelConfig["model"]["init_args"]["pre_processor_path"]:
-        transform = load_transform_from_yaml(modelConfig["model"]["init_args"]["pre_processor_path"], copyPath=copyPath)
+    
+    pre_processor_path:str|None = modelConfig["model"]["init_args"].get("pre_processor_path",None)
+    post_processor_path:str|None = modelConfig["model"]["init_args"].get("post_processor_path",None)
+    evaluator_path:str|None = modelConfig["model"]["init_args"].get("evaluator_path",None)
+
+
+
+    if pre_processor_path is not None:
+        transform = load_transform_from_yaml(configDir / pre_processor_path, copyPath=copyPath)
         modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor(transform)
     else:
         modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor()
 
     # Read the Postprocessor and copy if desired
-    if modelConfig["model"]["init_args"]["post_processor_path"]:
-        with open(modelConfig["model"]["init_args"]["post_processor_path"], 'r') as f:
+    if post_processor_path is not None:
+        with open(configDir / post_processor_path, 'r') as f:
             postProcessorConfig = yaml.safe_load(f)
-        configFileName = modelConfig["model"]["init_args"]["post_processor_path"].split(os.sep)[-1]
+        configFileName = post_processor_path.split(os.sep)[-1]
         if copyPath is not None:
             shutil.copy2(config_path, os.path.join(copyPath, configFileName))
         modelConfig["model"]["init_args"]["post_processor"] = PostProcessor(**postProcessorConfig)
@@ -84,11 +94,11 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
                                 overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
                                 text_config=DEFAULT_TEXT_CONFIG)
 
-    if modelConfig["model"]["init_args"]["evaluator_path"]:
+    if evaluator_path is not None:
         if copyPath is not None:
-            configFileName = modelConfig["model"]["init_args"]["evaluator_path"].split(os.sep)[-1]
+            configFileName = evaluator_path.split(os.sep)[-1]
             shutil.copy2(config_path, os.path.join(copyPath, configFileName))
-        modelConfig["model"]["init_args"]["evaluator"] = Evaluator(*load_metrics_from_yaml(modelConfig["model"]["init_args"]["evaluator_path"]))
+        modelConfig["model"]["init_args"]["evaluator"] = Evaluator(*load_metrics_from_yaml(configDir / evaluator_path))
     else:
         modelConfig["model"]["init_args"]["evaluator"] = getDefaultEvaluator()
     return modelConfig
