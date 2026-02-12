@@ -11,6 +11,8 @@ from anomalib.deploy import ExportType, TorchInferencer
 from anomalib.engine import Engine
 from anomalib.models import Padim, Patchcore, Stfpm
 from AnomalyDataset import FODataModule
+from anomalib.models.components.base import AnomalibModule
+
 
 from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble
 from AnomalyDataset import importDataset, FODataModule
@@ -80,9 +82,9 @@ def train_and_export_model(rootDir, dataset, model, transform=None, callbacks=No
 
     return engine, datamodule
 
-def run_inference(sample_collection, engine: Engine, key):
+def run_inference(sample_collection, engine: Engine, model:AnomalibModule, key:str):
     for sample in sample_collection.iter_samples(autosave=True, progress=True):
-        output = engine.predict(data_path=sample.filepath)[0]
+        output = engine.predict(data_path=sample.filepath, model=model)[0]
         
         conf = output.pred_score.item()
         anomaly = "anomaly" if output.pred_label else "normal"
