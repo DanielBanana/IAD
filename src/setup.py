@@ -112,6 +112,35 @@ def create_datamodule(dataset, category, train_batch_size, eval_batch_size, num_
         
     return datamodule
 
+def mapNameToModule(modelName:str):
+    if modelName.lower() == "efficientad-s":
+        # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
+        model = EfficientAd
+    elif modelName.lower() == "efficientad-m":
+        model = EfficientAd
+    elif modelName.lower() == "dsr":
+        model = Dsr
+    elif modelName.lower() == "reversedistillation":
+        model = ReverseDistillation
+    elif modelName.lower() == "reverse_distillation":
+        model = ReverseDistillation
+    elif modelName.lower() == "rd":
+        model = ReverseDistillation
+    elif modelName.lower() == "stfpm":
+        model = Stfpm
+    elif modelName.lower() == "fastflow":
+        model = Fastflow
+    elif modelName.lower() == "fast_flow":
+        model = Fastflow
+    elif modelName.lower() == "patchcore":
+        model = Patchcore
+    elif modelName.lower() == "padim":
+        model = Padim
+    else:
+        KeyError(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
+        model=None
+    return model
+
 def create_model(modelName, modelConfig):
     if modelName == "efficientad-s":
         # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
@@ -234,26 +263,6 @@ class LoggerStdin:
 
     def __getattr__(self, attr):
         return getattr(self.builtin_stdin, attr)
-
-def setupLogging(logDir, runName, versionName):
-    logFileName = f"trainer.log"
-    logDir = os.path.join(logDir, runName, versionName)
-    logger = logging.getLogger("general.trainer")
-    logger.setLevel(logging.INFO)
-    # log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    fileHandler = logging.FileHandler(os.path.join(logDir, logFileName))
-    fileHandler.setLevel(logging.INFO)
-    logFormater = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    fileHandler.setFormatter(logFormater)
-    # file_handler.setFormatter(log_formatter)
-    logger.addHandler(fileHandler)
-    # Create a StreamHandler to duplicate console output to the logger
-    # console_handler = logging.StreamHandler(sys.stdout)
-    # console_handler.setLevel(logging.INFO)
-    # console_handler.setFormatter(log_formatter)
-    # logger.addHandler(console_handler)
-    # sys.stdout = LoggerWriter(logger, logging.INFO)
-    return logger, logDir
 
 def find_first_file(directory, target_filename):
     target_lower = target_filename.lower()
