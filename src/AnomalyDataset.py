@@ -1102,7 +1102,7 @@ def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...
     elif "pred" in split:
         return loadPredictDataset(path, name)
     else:
-        raise ValueError("split must be 'train', 'test', ('train', 'test') or predß")
+        raise ValueError("split must be 'train', 'test', ('train', 'test') or pred")
 
     dataset = fod.Dataset(name=name, overwrite=overwrite)
     info = None
