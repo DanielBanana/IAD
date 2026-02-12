@@ -9,6 +9,7 @@ import fiftyone.zoo as foz # zoo datasets and models
 import cv2
 import datetime
 import logging
+from logging.config import dictConfig
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -27,6 +28,7 @@ from functools import partial
 from typing import Any, List, Tuple, Dict, Optional
 
 # ANOMALIB
+import anomalib.models
 from anomalib.models import Padim
 from anomalib.metrics import Evaluator
 from anomalib.deploy import ExportType
@@ -39,6 +41,7 @@ from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
 from anomalib.engine import Engine
 from anomalib.data.utils import DirType, LabelName, Split
+from lightning.pytorch.core import LightningModule
 
 # PYTROCH LIGHTNING
 from lightning.pytorch import Callback
@@ -46,7 +49,7 @@ from lightning.pytorch.callbacks import TQDMProgressBar
 
 # OWN FILES
 from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset, FODataModule, FODataset
-from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, setupLogging, LoggerWriter, LoggerStdin, setupWandBLoggingAndCallbacks
+from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, LoggerWriter, LoggerStdin, setupWandBLoggingAndCallbacks, mapNameToModule
 from visualisation import clipEmbedding, resnetEmbedding
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG, ENGINE_PARAMS, DATAMODULE_PARAMS
 from Training import run_inference, train_and_export_model, setupModel
@@ -62,6 +65,9 @@ class modelFlags(IntFlag):
     hasTrainingData = auto()
     hasValidationData = auto()
     hasEmbedding = auto()
+
+# Create the general logger
+logger = logging.getLogger(__name__)
 
 class IAD():
     """Class managing the training and validation of the Industrial Anomaly Detection
@@ -111,8 +117,9 @@ class IAD():
         self.versionName:str = "version"
         self.runDir:Path|None = None
         self.ckptDir:Path|None = None
-        self.ckptFileName:str = "best.ckpt"
+        self.ckptFileName:str = "best"
         self.ckptPath:Path|None = None
+        self.ckptSuffix:str = ".ckpt"
 
         self.weightsPath:Path|None = None
         
@@ -122,26 +129,37 @@ class IAD():
         self.runLogger:AnomalibWandbLogger|None = None
 
         self.shutdown:bool = False
+        self.setupLogging()
 
 
-        # Create the general logger
-        self.generalLogger = logging.getLogger('general')
-        self.generalLogger.setLevel(logging.INFO)
-        logFormater = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        # Create a file handler for the general logger
-        if not os.path.exists(self.logDir):
-            os.makedirs(self.logDir)
-        fileHandler = logging.FileHandler(self.logPathGeneral)
-        fileHandler.setLevel(logging.INFO)
-        fileHandler.setFormatter(logFormater)
-        self.generalLogger.addHandler(fileHandler)
-        # Create a StreamHandler to duplicate console output to the logger
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(logging.Formatter('%(message)s'))
-        self.generalLogger.addHandler(console_handler)
-        sys.stdout = LoggerWriter(self.generalLogger, logging.INFO)
-        sys.stdin = LoggerStdin(self.generalLogger, logging.INFO)
+        # logFormater = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        # # Create a file handler for the general logger
+        # if not os.path.exists(self.logDir):
+        #     os.makedirs(self.logDir)
+        # fileHandler = logging.FileHandler(self.logPathGeneral)
+        # fileHandler.setLevel(logging.INFO)
+        # fileHandler.setFormatter(logFormater)
+        # self.generalLogger.addHandler(fileHandler)
+        # # Create a StreamHandler to duplicate console output to the logger
+        # console_handler = logging.StreamHandler(sys.stdout)
+        # console_handler.setLevel(logging.INFO)
+        # console_handler.setFormatter(logging.Formatter('%(message)s'))
+        # self.generalLogger.addHandler(console_handler)
+        # sys.stdout = LoggerWriter(self.generalLogger, logging.INFO)
+        # sys.stdin = LoggerStdin(self.generalLogger, logging.INFO)
+
+    def setupLogging(self):
+        config_file = self.configDir / "logging.yaml"
+        with open(config_file) as file:
+            config:dict[str,Any] = yaml.safe_load(file)
+        handlers:dict[str, dict[str,Any]]|None = config.get("handlers", None)
+        if handlers is not None:
+            for handlerName in handlers.keys():
+                filename = handlers[handlerName].get("filename", None)
+                if filename is not None:
+                    config["handlers"][handlerName]["filename"] = self.logDir / filename
+        dictConfig(config=config)
+        logging.basicConfig(level="INFO")
 
     def adjustOutputPath(self) -> Path:
         """This function should be called depending on the current values of dataset, model and the category for which the model is trained
@@ -157,35 +175,40 @@ class IAD():
         if self.datasetName is not None:
             outputPath = self.baseOutpath / self.datasetName
         else:
-            print("Set dataset before adjusting path!")
+            logger.info("Set dataset before adjusting path!")
             return self.outputPath
         if self.category is not None:
             outputPath = outputPath / self.category
         if self.modelName is not None:
             outputPath = outputPath / self.modelName
             if self.model is not None:
-                self.model.visualizer.output_dir = outputPath / "imagesByLabels"
+                self.model.visualizer.output_dir = outputPath / "images"
             else:
-                print("No model set; Cant adjust path for visualiser (saving result images to disk)")
+                logger.info("No model set; Cant adjust path for visualiser (saving result images to disk)")
         if self.isTilingSetup:
             outputPath /= "tiled"
 
         self.ckptDir = outputPath / "checkpoints"
-        self.ckptPath = self.ckptDir / self.ckptFileName
+        self.ckptPath = self.ckptDir / (self.ckptFileName + self.ckptSuffix)
 
         self.outputPath = outputPath
         return outputPath
 
-    def generateModel(self, configModelName:str="padim.yaml") -> None:
+    def generateModel(self, configModelName:str="Padim.yaml", configsDir:Optional[Path] = None) -> None:
         """Generate a model based on a config file always looks under the self.configsDir directory
 
         Keyword Arguments:
-            configModelName -- Name of the config file (default: {"padim.yaml"})
+            configModelName -- Name of the config file (default: {"Padim.yaml"})
         """
+        if configsDir is not None:
+            _configsDir = configsDir
+        else:
+            _configsDir = self.configDir
+
         if not configModelName.lower().endswith('.yaml'):
             configModelName = configModelName + '.yaml'
         
-        modelConfigPath = self.configDir / configModelName
+        modelConfigPath = _configsDir / configModelName
         if not os.path.exists(modelConfigPath):
             FileNotFoundError(f"Error: Config file {modelConfigPath} not found.")
         self.modelConfigPath = modelConfigPath
@@ -194,17 +217,29 @@ class IAD():
 
         self.modelName = self.modelConfig["model"].get("class_path").lower()
 
-        self.postProcessorPath = self.modelConfig["model"]["init_args"].pop("post_processor_path",None)
-        self.preProcessorPath = self.modelConfig["model"]["init_args"].pop("pre_processor_path",None)
-        self.evaluatorPath = self.modelConfig["model"]["init_args"].pop("evaluator_path",None)
+        path:str|None = self.modelConfig["model"]["init_args"].pop("post_processor_path",None)
+        if path is not None:
+            self.postProcessorPath = _configsDir / path
+        path:str|None = self.modelConfig["model"]["init_args"].pop("pre_processor_path",None)
+        if path is not None:
+            self.preProcessorPath = _configsDir / path
+        path:str|None = self.modelConfig["model"]["init_args"].pop("evaluator_path",None)
+        if path is not None:
+            self.evaluatorPath = _configsDir / path
 
-        print(f"Model {self.modelName} loaded: {self.modelConfig}")
+        # self.postProcessorPath = _configsDir / self.modelConfig["model"]["init_args"].pop("post_processor_path",None)
+        # self.preProcessorPath = _configsDir / self.modelConfig["model"]["init_args"].pop("pre_processor_path",None)
+        # self.evaluatorPath = _configsDir / self.modelConfig["model"]["init_args"].pop("evaluator_path",None)
+
+        logger.info(f"Model {self.modelName} loaded: {self.modelConfig}")
         self.model = create_model(self.modelName, self.modelConfig["model"]["init_args"])
-        print(f"Model {self.model} created.")
+        logger.info(f"Model {self.model} created.")
 
     def loadTrainedModel(self, folder:Path) -> None:
-        """Load a trained model from a model.pt from a folder; Especially look for a model.pt file there. Then search for a config .yaml-file
+        """DEPRECATED
+        Load a trained model from a model.pt from a folder; Especially look for a model.pt file there. Then search for a config .yaml-file
         in that folder
+
 
         Arguments:
             folderPath -- Path to the folder of the trained model
@@ -214,7 +249,7 @@ class IAD():
         if modelPath is None:
             raise FileNotFoundError(f"model.pt not found in {folder}!")
         else:
-            print(f"Found model weights at {modelPath}")
+            logger.info(f"Found model weights at {modelPath}")
             self.modelPath = modelPath
         
         # Find the config to the model.pt at the given folderPath
@@ -224,28 +259,37 @@ class IAD():
         if modelConfigPath is None:
             FileNotFoundError(f"No .yaml config file found in {folder}!")
         else:
-            print(f"Found model config at {modelConfigPath}")
+            logger.info(f"Found model config at {modelConfigPath}")
             self.modelConfigPath = modelConfigPath
         
         self.generateModel(str(self.modelConfigPath))
         loadModelCallback = LoadModelCallback(weights_path=str(self.modelPath))
         self.callbacks["loadModel"] = loadModelCallback
         self.state |= modelFlags.hasModel
-        print("Model loaded.")
+        logger.info("Model loaded.")
         self.adjustOutputPath()
 
-    def loadCheckpoint(self, path:Path):
+    def loadCheckpoint(self, path:Path, modelName:str):
         """Load model from a lightning Checkpoint file
 
         Arguments:
             path -- Path to the checkpoint file.
         """
         # TODO: Adapt for other model types; check path or ask for model type
-        self.model = Padim.load_from_checkpoint(path)
+        # self.model = Padim.load_from_checkpoint(path)
+        if modelName not in MODELS:
+            KeyError(f"Model: {modelName} not known")
+        modelInstance = mapNameToModule(modelName)
+        self.model = modelInstance.load_from_checkpoint(path)
 
     def loadDatasetFromDatabase(self, datasetName:str):
+        """Load a dataset from the voxel51 MongoDB
+
+        Arguments:
+            datasetName -- Name of the dataset as it was saved into the database
+        """
         if fo.dataset_exists(datasetName):
-            # print(f"Dataset '{datasetName}' exists in database")
+            # logger.info(f"Dataset '{datasetName}' exists in database")
             self.dataset = fo.load_dataset(datasetName)
             if Split.TRAIN in list(self.dataset.tags):
                 self.state |= modelFlags.hasTrainingData
@@ -253,24 +297,37 @@ class IAD():
                 self.state |= modelFlags.hasValidationData
             self.datasetName = datasetName
             self.categories = self.dataset.distinct("category.label")
-            print(f"Loaded dataset '{datasetName}' from database!")
+            logger.info(f"Loaded dataset '{datasetName}' from database!")
         else:
-            print(f"Dataset '{datasetName}' does not exist in database")
+            logger.info(f"Dataset '{datasetName}' does not exist in database")
         
-    def loadDatasetFromDisk(self, datasetPath: Path, datasetName:str = "", overwrite:bool=False, merge:bool=True, split:Tuple[str,...] = ("train", "test")):
+    def loadDatasetFromDisk(self, datasetPath: Path, datasetName:str = "", overwrite:bool=True, merge:bool=False, split:Tuple[str,...] = ("train", "test")):
+        """Load a dataset from a given path on the disk and give it a name for the Voxel51 MongoDB.
+        Existing dataset in the database can be overwritten or merged with.
+        
+
+        Arguments:
+            datasetPath -- directory where to find the dataset
+
+        Keyword Arguments:
+            datasetName -- Name of the dataset for the database (default: {""})
+            overwrite -- overwrite a potential dataset in the database with the same name? (default: {True})
+            merge -- merge with a potential dataset in the database with the same name? (default: {False})
+            split -- Does the data contain training, testing both or prediction data (default: {("train", "test")})
+        """
         if overwrite and merge:
-            print("Overwrite and merge should not both be true. Overwrite is ignored...")
+            logger.info("Overwrite and merge should not both be true. Overwrite is ignored...")
             overwrite = False
 
         elif not datasetPath.exists():
-            print(f"Dataset {datasetPath} does not exit")
+            logger.info(f"Dataset {datasetPath} does not exit")
             exit(1)
         elif fo.dataset_exists(datasetName) and not overwrite and not merge:
-            print(f"Dataset '{datasetName}' already exists in database")
+            logger.info(f"Dataset '{datasetName}' already exists in database")
             self.loadDatasetFromDatabase(datasetName)            
         elif fo.dataset_exists(datasetName) and overwrite:
-            print(f"Dataset '{datasetName}' already exists in database")
-            print("Overwriting")
+            logger.info(f"Dataset '{datasetName}' already exists in database")
+            logger.info("Overwriting")
             dataset, _ = importDataset(
                 path=datasetPath,
                 name=datasetName,
@@ -280,8 +337,8 @@ class IAD():
             self.dataset = dataset
             self.datasetName = datasetName
         elif fo.dataset_exists(datasetName) and merge:
-            print(f"Dataset '{datasetName}' already exists in database")
-            print("Merging")
+            logger.info(f"Dataset '{datasetName}' already exists in database")
+            logger.info("Merging")
             dataset, _ = importDataset(
                 path=datasetPath,
                 name=datasetName+"_"+str(self.now),
@@ -289,7 +346,7 @@ class IAD():
                 split=split
             )
             self.dataset = fo.load_dataset(datasetName)
-            print(f"Loading {datasetName} from database for merging")
+            logger.info(f"Loading {datasetName} from database for merging")
             self.dataset.merge_samples(dataset)
             self.datasetName = datasetName
         else:
@@ -309,6 +366,14 @@ class IAD():
         self.categories = self.dataset.distinct("category.label")
 
     def _setupDatamodule(self, datamoduleParams: dict[str, Any]) -> FODataModule:
+        """Setup a datamodule from the dataset for running a model on the data
+
+        Arguments:
+            datamoduleParams -- _description_
+
+        Returns:
+            _description_
+        """
         if self.dataset is not None:
             if self.datasetName is None:
                 self.datasetName = "unnamedDataset"
@@ -316,26 +381,31 @@ class IAD():
             datamodule.setup()
             self.datamodule = datamodule
         else:
-            print("No dataset available")
+            logger.info("No dataset available")
             exit(1)
         if self.model is None:
-            print("No model available")
+            logger.info("No model available")
             exit(1)
         return self.datamodule
 
     def generateEmbedding(self) -> None:
-        """Generate an embedding of the dataset into a 2d space to visually inspect the data. Opens a voxel51 session"""
+        """Generate an embedding of the dataset into a 2d space to visually inspect the data. Opens a voxel51 session
+
+        Raises:
+            AttributeError: Needs a dataset to be set
+        """
+
         if self.dataset is None:
             raise AttributeError("No dataset loaded. Please load or create a dataset first.")
         else:
             if not modelFlags.hasEmbedding in self.state:
                 with exclude_from_logger():
                     clipEmbedding(self.dataset)
-                print("Finished embedding computation.")
-                print("Please reload the FiftyOne app to see the new visualizations.")
+                logger.info("Finished embedding computation.")
+                logger.info("Please reload the FiftyOne app to see the new visualizations.")
             else:
-                print("Data already has embedding")
-                print("You find the visualizations by clicking the '+' next to Samples and choosing Embeddings.")
+                logger.info("Data already has embedding")
+                logger.info("You find the visualizations by clicking the '+' next to Samples and choosing Embeddings.")
             self.state |= modelFlags.hasEmbedding
         
     def copyFilesToPath(self, path:Path):
@@ -351,9 +421,20 @@ class IAD():
             shutil.copy2(self.modelConfigPath, path / configFileName)
         else:
             raise AttributeError(f"Model config path is empty. Load model before calling this function!")
+        
         if self.preProcessorPath is not None:
+            _, fileName = os.path.split(self.preProcessorPath)
+            shutil.copy2(self.preProcessorPath, path / fileName)
+        if self.postProcessorPath is not None:
+            _, fileName = os.path.split(self.postProcessorPath)
+            shutil.copy2(self.postProcessorPath, path / fileName)
+        if self.evaluatorPath is not None:
+            _, fileName = os.path.split(self.evaluatorPath)
+            shutil.copy2(self.evaluatorPath, path / fileName)
+        if self.visualizerPath is not None:
+            _, fileName = os.path.split(self.visualizerPath)
+            shutil.copy2(self.visualizerPath, path / fileName)
 
-    
     def copyFilesToOutputPath(self):
         self.copyFilesToPath(self.outputPath)
 
@@ -375,7 +456,7 @@ class IAD():
             elif category not in self.categories:
                 AttributeError(f"Category {category} not found! Available categories are: {self.categories}")
             else:
-                print(f"Category found in categories for this dataset:")
+                logger.info(f"Category found in categories for this dataset:")
                 self.category = category
 
     #####
@@ -383,6 +464,7 @@ class IAD():
     #####
 
     def setupRunLogging(self, runName:str, runDir:Path, logFileName:str="run.log") -> Logger:
+        pass
         logger = logging.getLogger(f"general.{runName}")
         logger.setLevel(logging.INFO)
         fileHandler = logging.FileHandler(os.path.join(runDir, logFileName))
@@ -392,11 +474,24 @@ class IAD():
         logger.addHandler(fileHandler)
         return logger
 
-    def setupCallbacks(self, path:Path):
+    def setupCallbacks(self):
+        """Setup the standard callbacks for running a model
+        Checkpointing to a file based on a performance monitor
+        Timing the process
+        creating a visual progress bar
+
+
+        Arguments:
+            dir -- _description_
+        """
         # self.runDir:Path = Path(os.path.join(self.outputPath, runName, f"version_{version}"))
         # self.ckptDir = path / "checkpoints"
-        if not os.path.exists(self.ckptDir):
-            os.mkdir(self.ckptDir)
+        if self.ckptDir is not None:
+            if not self.ckptDir.exists():
+                self.ckptDir.mkdir(parents=True)
+            self.ckptPath = self.ckptDir / (self.ckptFileName + self.ckptSuffix)
+        else:
+            AttributeError(f"ckptDir is both None")
 
         checkpointCallback = ModelCheckpoint(
             dirpath=self.ckptDir,
@@ -407,7 +502,6 @@ class IAD():
             mode="min",  # Save the model with the minimum training loss,
             enable_version_counter=False
         )
-        # self.ckptPath = self.ckptDir / self.ckptFileName
         
         # graphCallback = GraphLogger()
         timerCallback = TimerCallback()
@@ -421,6 +515,13 @@ class IAD():
         }
 
     def setupWandBLogger(self, runName:str, runDir:Path, version:int|str):
+        """Setup a weights and biases logger that can be review from the browser
+
+        Arguments:
+            runName -- _description_
+            runDir -- _description_
+            version -- _description_
+        """
         self.runLogger = AnomalibWandbLogger(
             name=runName,
             save_dir=runDir,
@@ -435,15 +536,33 @@ class IAD():
     #####
 
     def setupTiling(self, tilingConfigPath:Path):
+        """Setup the training on tiles by reading a config file.
+
+        Arguments:
+            tilingConfigPath -- Path to the config file. Usually in configs folder
+
+        Raises:
+            FileNotFoundError: If Path not found
+        """
         if (tilingConfigPath.suffix == ".yaml") & tilingConfigPath.exists():
             with open(tilingConfigPath, "r") as file:
                 self.tilingConfigDict:dict[str,Any] = yaml.safe_load(file)
         else:
-            print()
+            logger.info()
             raise FileNotFoundError(f"{tilingConfigPath} file not found.")
         self.isTilingSetup = True
+        return self.isTilingSetup
 
     def _checkBeforeTraining(self) -> bool:
+        """Before the training can start check if a model and a dataset exist.
+
+        Raises:
+            AttributeError: model not found
+            AttributeError: dataset not found
+
+        Returns:
+            True if both exist; otherwise False
+        """
         if self.model is None:
             raise AttributeError("Expected model attribute to be set")
         if self.dataset is None:
@@ -467,7 +586,8 @@ class IAD():
         if not trainingConfigPath.exists():
             FileNotFoundError("Error: .yaml config file not found in configs folder.")
         if tiling and not self.isTilingSetup:
-            AttributeError("tiling is not setup: Call 'setupTiling()")
+            if not self.setupTiling(self.tilingConfigPath):
+                AttributeError("tiling is not setup and automated call to setupTiling() failed: Call 'setupTiling()")
 
         with open(trainingConfigPath, 'r') as f:
             self.trainingConfig = yaml.safe_load(f) 
@@ -487,28 +607,42 @@ class IAD():
             # )
 
             # self.runLogger = self.setupRunLogging(runName=self.runName, runDir=self.runDir)
-        self.setupCallbacks(self.outputPath)
+        self.adjustOutputPath()
+        self.setupCallbacks()
         self.setupWandBLogger(self.runName, self.outputPath, self.version)
         if tiling:
             self._trainTiledModel(self.trainingConfig)
         else:
             self._trainSingleModel(self.trainingConfig)
 
-    def _trainSingleModel(self, trainingConfig:dict[str, Any]):
+    def _trainSingleModel(self, config:dict[str, Any]):
+        """Train a singular model on the dataset based on a training config file.
+
+        Arguments:
+            trainingConfig -- _description_
+        """
         self._checkBeforeTraining()
-        self.engineParams = {key: trainingConfig[key] for key in ENGINE_PARAMS if key in trainingConfig}
-        self.datamoduleParams = {key: trainingConfig[key] for key in DATAMODULE_PARAMS if key in trainingConfig}
+        self.engineParams = {key: config[key] for key in ENGINE_PARAMS if key in config}
+        self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
         self.datamodule = self._setupDatamodule(self.datamoduleParams)
         self.engine = Engine(callbacks=list(self.callbacks.values()), logger=self.runLogger, **self.engineParams)
         self.engine.fit(model=self.model, datamodule=self.datamodule)
 
-        print("Running inference on dataset...")
+        logger.info("Running inference on dataset...")
         with exclude_from_logger():
-            run_inference(self.dataset, self.engine, self.modelName)
+            run_inference(self.dataset, self.engine, self.model, self.modelName)
 
         self.currentSession = fo.launch_app(self.dataset)
 
     def _trainTiledModel(self, config:dict[str, Any]):
+        """Train a tiled model on the dataset based on a training config file.
+
+        Arguments:
+            config -- Config dictionary
+
+        Returns:
+            the pipeline for the training jobs
+        """
         self._checkBeforeTraining()
 
         # Setup datamodule for the tiling 
@@ -520,62 +654,84 @@ class IAD():
         trainPipeline = TrainTiledEnsemble()
         trainPipeline.setDatamodule(datamodule=self.datamodule)
         if self.model:
-            self.tilingConfigDict["TrainModels"]["model"]["class_path"] = "Padim"
-            self.tilingConfigDict["TrainModels"]["model"]["init_args"] = self.modelConfig
+            # self.tilingConfigDict["TrainModels"]["model"]["class_path"] = "Padim"
+            self.tilingConfigDict["TrainModels"] = self.modelConfig
         trainPipeline.run(self.tilingConfigDict, self.logFileNameGeneral)
         # trainPipeline.run(args)
         self.trainPipeline = trainPipeline
         return self.trainPipeline
     
-    def eval(self, trainingConfigPath:Path, tiling:bool=False):
+    def predict(self, config:Path, tiling:bool=False):
+        """predictuate the current model on the dataset
+
+        Arguments: 
+            config -- path to the config
+
+        Keyword Arguments:
+            tiling -- _description_ (default: {False})
+        """
         if not self._checkBeforeTraining():
             exit(1)
-        if not trainingConfigPath.suffix == ".yaml":
+        if not config.suffix == ".yaml":
             FileNotFoundError("Config file needs to have .yaml suffix")
-        if not trainingConfigPath.exists():
+        if not config.exists():
             FileNotFoundError("Error: .yaml config file not found in configs folder.")
         if tiling and not self.isTilingSetup:
             AttributeError("tiling is not setup: Call 'setupTiling()")
 
-        with open(trainingConfigPath, 'r') as f:
+        with open(config, 'r') as f:
             self.trainingConfig = yaml.safe_load(f) 
         if self.category is not None:
             self.runName = f"{self.modelName}-{self.datasetName}-{self.category}"
         else:
             self.runName =f"{self.modelName}-{self.datasetName}"
 
-        self.setupCallbacks(self.outputPath)
+        self.adjustOutputPath()
+        self.setupCallbacks()
         self.setupWandBLogger(self.runName, self.outputPath, self.version)
         if tiling:
-            self._evalTiledModel(self.trainingConfig)
+            self._predictTiledModel(self.trainingConfig)
         else:
-            self._evalSingleModel(self.trainingConfig)
+            self._predictSingleModel(self.trainingConfig)
         
-    def _evalTiledModel(self, config:dict[str, Any]):
+    def _predictTiledModel(self, config:dict[str, Any]):
+        """Evaluate a tiled model on the dataset
+
+        Arguments:
+            config -- config dictionary
+        """
         # Setup datamodule for the tiling 
         self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
         self.datamodule = self._setupDatamodule(self.datamoduleParams)
 
         self.adjustOutputPath()
 
-        print("Running tiled ensemble test pipeline.")
+        logger.info("Running tiled ensemble test pipeline.")
         # pass the root dir from train run to load checkpoints
         self.tilingConfigDict = self.parseTilingConfig(self.tilingConfigPath)
         test_pipeline = EvalTiledEnsemble(self.tilingConfigDict["rootDir"])
         test_pipeline.setDatamodule(datamodule=self.datamodule)
         test_pipeline.run(self.tilingConfigDict, self.logFileNameGeneral)
 
-    def _evalSingleModel(self, config:dict[str, Any]):
+    def _predictSingleModel(self, config:dict[str, Any]):
+        """Evaluate a singular model on the dataset
+
+        Arguments:
+            config -- config dictionary
+        """
         self._checkBeforeTraining()
         self.engineParams = {key: config[key] for key in ENGINE_PARAMS if key in config}
         self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
         self.datamodule = self._setupDatamodule(self.datamoduleParams)
         self.engine = Engine(callbacks=list(self.callbacks.values()), logger=self.runLogger, **self.engineParams)
-        self.engine.predict(model=self.model, datamodule=self.datamodule)
+        # prediction = self.engine.predict(model=self.model, datamodule=self.datamodule) # The result of this function is kinda useless
 
-        # print("Running inference on dataset...")
-        # with exclude_from_logger():
-        #     run_inference(self.dataset, self.engine, self.modelName)
+        # logger.info("Running inference on dataset...")
+        with exclude_from_logger():
+            if self.model is not None and self.modelName is not None:
+                run_inference(self.dataset, self.engine, self.model, self.modelName)
+            else:
+                AttributeError("Need self.model and self.modelName")
 
         self.currentSession = fo.launch_app(self.dataset)
 
@@ -598,7 +754,6 @@ class IAD():
                 tilingConfigDict["ckptPath"] = self.ckptPath
         self.isTilingSetup = True
         return tilingConfigDict
-        
 
     #####
     # Export to Disk
@@ -611,7 +766,7 @@ class IAD():
                         export_root=self.outputPath,
                         model_file_name="model")
         else:
-            print("No model available")
+            logger.info("No model available")
             exit(1)
 
         return self.modelWeightsPath
@@ -639,9 +794,9 @@ class IAD():
     def launchSession(self):
         if self.dataset is not None:
             self.session = fo.launch_app(self.dataset)
-            print(f"Session addess and port: {self.session.server_address}:{self.session.server_port}")
+            logger.info(f"Session addess and port: {self.session.server_address}:{self.session.server_port}")
         else:
-            print("Load a dataset first!")
+            logger.info("Load a dataset first!")
 
 
 
@@ -654,27 +809,36 @@ if __name__ == "__main__":
     # Try to setup wandb
     wandb.login()
     iad = IAD()
+
     
-    iad.generateModel("padim.yaml")
+    modelName = "Padim"
+    tiling = True
+    datasetName = "traintest"
+
+    iad.generateModel(f"{modelName}.yaml")
     # datasetPath1 = Path(os.path.join("datasets", "traintest"))
     # iad.loadDatasetFromDisk(datasetPath1, "traintest", overwrite=False, merge=False)
     # iad.launchSession()
-    datasetPath2 = Path(os.path.join("datasets", "traintest"))
-    iad.loadDatasetFromDisk(datasetPath2, "traintest", overwrite=True, merge=False)
+    
+    datasetPath2 = Path(os.path.join("datasets", datasetName))
+    iad.loadDatasetFromDisk(datasetPath2, datasetName, overwrite=True, merge=False)
     # iad.launchSession()
     # iad.loadDatasetFromDatabase("MVTecADShort")
     if iad.dataset is None:
         exit(1)
+
     iad.selectCategory("all")
     iad.adjustOutputPath()
     iad.copyFilesToOutputPath()
     #iad.launchSession()
-    # iad.loadCheckpoint(Path("results/MVTecADShort/bottle/padim/checkpoints/best.ckpt"))
-    # iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
-    # iad.train(Path("configs/padim_Training.yaml"), tiling=False)
+    # iad.loadCheckpoint(Path("results/MVTecADShort/bottle/padim/checkpoints/best.ckpt"), "padim")
+    if tiling:
+        iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
+    iad.train(Path(f"configs/{modelName}_Training.yaml"), tiling=tiling)
     if iad.ckptPath is not None:
-        iad.loadCheckpoint(iad.ckptPath)
-        iad.eval(Path("configs/padim_Training.yaml"), tiling=False)
+        if not tiling:
+            iad.loadCheckpoint(iad.ckptPath, f"{modelName}")
+        iad.predict(Path("configs/Predict.yaml"), tiling=tiling)
     # iad.exportResults(Path("EXPORT_TEST"))
     # iad.exportDataset(Path("EXPORT_TEST"))
     shutdown = False
