@@ -17,7 +17,47 @@ import os
 from pathlib import Path
 import yaml
 import torchvision.transforms.v2 as T
-from typing import Any
+from typing import Any, Dict, Tuple
+
+from tiling.post_processor import AOIPostProcessor
+from enum import Enum
+
+
+class VisualizerType(Enum):
+    train = 0
+    valNoGT = 1
+    valGT = 2
+
+def getVisualizer(vtype:VisualizerType, fieldSize:Tuple[int,int]):
+    match vtype:
+        case VisualizerType.train:
+            visualizer = ImageVisualizer(# output_dir=prediction_path,
+                        fields=["image"],
+                        overlay_fields=[("image", ["anomaly_map"])],
+                        field_size=fieldSize,
+                        fields_config=DEFAULT_FIELDS_CONFIG,
+                        overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
+                        text_config=DEFAULT_TEXT_CONFIG)
+            return visualizer
+        case VisualizerType.valNoGT:
+            visualizer = ImageVisualizer(# output_dir=prediction_path,
+                        fields=["image", "pred_mask"],
+                        overlay_fields=[("image", ["anomaly_map"]), ("image", ["pred_mask"])],
+                        field_size=fieldSize,
+                        fields_config=DEFAULT_FIELDS_CONFIG,
+                        overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
+                        text_config=DEFAULT_TEXT_CONFIG)
+            return visualizer
+
+        case VisualizerType.valGT:
+            visualizer = ImageVisualizer(# output_dir=prediction_path,
+                        fields=["image", "gt_mask", "pred_mask"],
+                        overlay_fields=[("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])],
+                        field_size=fieldSize,
+                        fields_config=DEFAULT_FIELDS_CONFIG,
+                        overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
+                        text_config=DEFAULT_TEXT_CONFIG)
+            return visualizer
 
 def find_first_file(directory:Path, target_filename:str) -> Path|None:
     target_lower = target_filename.lower()
@@ -36,12 +76,14 @@ def exclude_from_logger():
     finally:
         sys.stdout = original_stdout  # Restore logger stdout
 
-def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
+def loadConfig(config_path:Path, copyPath:Path|None=None, vtype:VisualizerType|None=None, fieldSize:Tuple[int,int]|None=None) -> Dict[str,Any]:
     """Load YAML config file."""
 
     # Open the general config file
     with open(config_path, 'r') as f:
         modelConfig = yaml.safe_load(f)
+
+    modelConfig = dict(modelConfig)
 
     # Directory where the config lies; it is assumed the other config files are in that folder as well
     configDir:Path = config_path.parent
@@ -61,8 +103,6 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
     post_processor_path:str|None = modelConfig["model"]["init_args"].get("post_processor_path",None)
     evaluator_path:str|None = modelConfig["model"]["init_args"].get("evaluator_path",None)
 
-
-
     if pre_processor_path is not None:
         transform = load_transform_from_yaml(configDir / pre_processor_path, copyPath=copyPath)
         modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor(transform)
@@ -76,23 +116,23 @@ def loadConfig(config_path:Path, copyPath:Path|None=None) -> Any:
         configFileName = post_processor_path.split(os.sep)[-1]
         if copyPath is not None:
             shutil.copy2(config_path, os.path.join(copyPath, configFileName))
-        modelConfig["model"]["init_args"]["post_processor"] = PostProcessor(**postProcessorConfig)
+        modelConfig["model"]["init_args"]["post_processor"] = AOIPostProcessor(**postProcessorConfig)
     else:
-        modelConfig["model"]["init_args"]["post_processor"] = PostProcessor(
+        modelConfig["model"]["init_args"]["post_processor"] = AOIPostProcessor(
             enable_normalization=True,
             enable_threshold_matching=True,
             enable_thresholding=True,
             image_sensitivity=0.01,
             pixel_sensitivity=0.01
         )
-
-    modelConfig["model"]["init_args"]["visualizer"] = ImageVisualizer(# output_dir=prediction_path,
-                                fields=["image", "gt_mask"],
-                                overlay_fields=[("image", ["anomaly_map"]), ("image", ["pred_mask"])],
-                                field_size=(256,256),
-                                fields_config=DEFAULT_FIELDS_CONFIG,
-                                overlay_fields_config=DEFAULT_OVERLAY_FIELDS_CONFIG,
-                                text_config=DEFAULT_TEXT_CONFIG)
+    
+    if vtype is None:
+        modelConfig["model"]["init_args"]["visualizer"] = False
+    else:
+        if fieldSize is None:
+            raise ValueError(f"If Visualiser is to be created a fieldSize needs to be given; {fieldSize} not allowed")
+        else:
+            modelConfig["model"]["init_args"]["visualizer"] = getVisualizer(vtype=vtype, fieldSize=fieldSize)
 
     if evaluator_path is not None:
         if copyPath is not None:
