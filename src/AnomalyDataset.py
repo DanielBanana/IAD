@@ -10,7 +10,7 @@ import pandas as pd
 
 
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
 from pathlib import Path
 from PIL import Image
 from torchvision.transforms.v2 import Resize, Transform
@@ -976,27 +976,60 @@ def make_fiftyone_dataset(
     # Convert to pandas DataFrame if dictionary or list is given
 
     # Check if samples contain image_path column
-    columns = ("image_path", "label_index", "label", "mask_path", "split")
-    if "filepath" not in samples.get_field_schema():
+    columns:Set[str] = set()
+    if "filepath" in samples.get_field_schema():
+        columns.add("image_path")
+    else:
         msg = "The _samples must each contain an 'filepath' field."
+        logger.error(msg)
         raise ValueError(msg)
-    _samples = pd.DataFrame(columns=columns)
+    if "label_index" in samples.get_field_schema():
+        columns.add("label_index")
+    else:
+        msg = "The samples must each contain a 'label_index' field. Either 0:('normal'), 1:('abnormal') or -1('unknown')."
+        logger.error(msg)
+        raise ValueError(msg)
+    if "split" in samples.get_field_schema():
+        columns.add("split")
+    else:
+        msg = "The samples must each contain a 'split' field. Either 'train', 'val', 'test'."
+        logger.error(msg)
+        raise ValueError(msg)
+    # if "mask_path" in samples.get_field_schema():
+    columns.add("mask_path")
+    columns.add("label")
+
+    _samples = pd.DataFrame(columns=list(columns))
 
     for sample in samples:
-        if sample.filepath == "":
+        sampleDict = {column: None for column in columns}
+        if not hasattr(sample, "filepath"):
             msg = "The samples must each contain a filepath that is not empty."
             raise ValueError(msg)
         else:
             sample["image_path"] = sample.filepath
-        if sample.mask_path != "":
+            sampleDict["image_path"] = sample["image_path"] 
+            
+        if sample.get_field_schema().get("mask_path", None) is not None:
             sample["mask_path"] = sample.mask_path
+            sampleDict["mask_path"] = sample["mask_path"] 
+        else:
+            sample["mask_path"] = ""
+            sampleDict["mask_path"] = ""
+
         # if sample.tags;
         if sample.get_field_schema().get("label_index", None) is None:
             msg = "The samples must each contain a 'label_index' field. Either 0:('normal'), 1:('abnormal') or -1('unknown')."
             raise ValueError(msg)
+        else:
+            sampleDict["label_index"] = sample["label_index"] 
+
         if sample.get_field_schema().get("split", None) is None:
-            msg = "The samples must each contain a 'label' field. Either 'train', 'val', 'test'."
+            msg = "The samples must each contain a 'split' field. Either 'train', 'val', 'test'."
             raise ValueError(msg)
+        else:
+            sampleDict["split"] = sample["split"] 
+
         if sample.label_index == LabelName.NORMAL:
             if sample.split == Split.TRAIN:
                 sample["label"] = DirType.NORMAL
@@ -1010,22 +1043,27 @@ def make_fiftyone_dataset(
             raise ValueError("sample.label_index can`t be UNKNOWN.")
         else:
             raise ValueError(f"sample.label_index {sample.label_index} not known.")
-        newDict = {column: sample[column] for column in columns}
-        _samples.loc[len(_samples)] = newDict
+        sampleDict["label"] = sample["label"] 
+        # newDict = {column: sample[column] for column in columns} # TODO Fix if mask are not available
+        _samples.loc[len(_samples)] = sampleDict
 
     #######################
     ### Post-processing ###
     #######################
 
     # Add root to paths
-    _samples["mask_path"] = _samples["mask_path"].fillna("")
-    if root:
-        _samples["image_path"] = _samples["image_path"].map(lambda x: Path(root, x))
-        _samples.loc[
-            _samples["mask_path"] != "",
-            "mask_path",
-        ] = _samples.loc[_samples["mask_path"] != "", "mask_path"].map(lambda x: Path(root, x))
-    _samples = _samples.astype({"image_path": "str", "mask_path": "str", "label": "str"})
+    if "mask_path" in _samples:
+        _samples["mask_path"] = _samples["mask_path"].fillna("")
+        if root:
+            _samples.loc[
+                _samples["mask_path"] != "",
+                "mask_path",
+            ] = _samples.loc[_samples["mask_path"] != "", "mask_path"].map(lambda x: Path(root, x))
+        _samples = _samples.astype({"image_path": "str", "mask_path": "str", "label": "str"})
+    else:
+        if root:
+            _samples["image_path"] = _samples["image_path"].map(lambda x: Path(root, x))
+        _samples = _samples.astype({"image_path": "str", "label": "str"})
 
     # Check if anomalous _samples are in training set
     if ((_samples.label_index == LabelName.ABNORMAL) & (_samples.split == Split.TRAIN)).any():
@@ -1038,7 +1076,10 @@ def make_fiftyone_dataset(
         raise ValueError(msg)
 
     # Infer the task type
-    _samples.attrs["task"] = "classification" if (_samples["mask_path"] == "").all() else "segmentation"
+    if "mask_path" in _samples:
+        _samples.attrs["task"] = "classification" if (_samples["mask_path"] == "").all() else "segmentation"
+    else:
+        _samples.attrs["task"] = "classification" 
 
     # Get the dataframe for the split.
     if split:
@@ -1119,8 +1160,8 @@ def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...
             if paths.get("ground_truth", None) is not None:
                 sample["ground_truth"] = fol.Segmentation(mask_path=paths["ground_truth"])
                 sample["mask_path"] = paths["ground_truth"]
-            else:
-                sample["mask_path"] = ""
+            # else:
+            #     sample["mask_path"] = ""
 
             dataset.add_sample(sample)
             splits.add(split)
@@ -1189,26 +1230,6 @@ def importPredictDataset(path, name="prediction", transform=None, imageSize=(256
         image_size=imageSize
     )
     return fo_dataset, anomalib_Dataset
-
-
-# def loadPredictionFolder(path, name):
-#     split = "prediction"
-#     dataset = fo.Dataset.from_dir(
-#         dataset_dir=path,
-#         dataset_type=fot.ImageDirectory,
-#         name=name,
-#     )
-#     for sample in dataset:
-#         sample["split"] = split
-#         sample["label_index"] = LabelName.UNKNOWN
-#         sample["anomalyType"] = "_unknown"
-#         sample["category"] = os.path.split(path)[-1]
-#         sample["mask_path"] = ""
-#         sample.save()
-#         info = None
-#     return dataset, info
-
-
 
 if __name__ == "__main__":
 
