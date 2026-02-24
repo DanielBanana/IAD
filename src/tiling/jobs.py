@@ -15,6 +15,7 @@ from tqdm import tqdm
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
 from anomalib.post_processing import PostProcessor
+from anomalib.visualization import ImageVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class AOIStatisticsJob(StatisticsJob):
             },
             "image_threshold": post_processor.image_threshold.item(),
             "pixel_threshold": post_processor.pixel_threshold.item(),
-            "save_path": (self.root_dir / "checkpoints" / "stats.json"),
+            "save_path": (self.root_dir / "stats.json"),
         }
     
 class AOIStatisticsJobGenerator(JobGenerator):
@@ -369,8 +370,12 @@ class PredictionMergingMechanism:
         }
         if hasattr(current_batch_data[0, 0], "mask_path"):
             merged_predictions["mask_path"] = current_batch_data[0, 0].mask_path
+        
+        tiled_data = ["image"]
 
-        tiled_data = ["image", "gt_mask"]
+        # What if the batch does not have a ground truth (gt) mask??
+        if hasattr(current_batch_data[0, 0], "gt_mask") and current_batch_data[0,0].gt_mask is not None:
+            tiled_data += ["gt_mask"]
         if hasattr(current_batch_data[0, 0], "anomaly_map") and current_batch_data[0, 0].anomaly_map is not None:
             tiled_data += ["anomaly_map"]
         if hasattr(current_batch_data[0, 0], "pred_mask") and current_batch_data[0, 0].pred_mask is not None:
@@ -388,3 +393,725 @@ class PredictionMergingMechanism:
         merged_predictions["pred_score"] = merged_scores_and_labels["pred_score"]
 
         return ImageBatch(**merged_predictions)
+
+
+# Copyright (C) 2024-2025 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tiled ensemble - normalization job."""
+
+import json
+import logging
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
+
+from tqdm import tqdm
+
+from anomalib.pipelines.components import Job, JobGenerator
+from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
+from anomalib.utils.normalization.min_max import normalize
+
+logger = logging.getLogger(__name__)
+
+
+class AOINormalizationJob(Job):
+    """Job for normalization of predictions.
+
+    Args:
+        predictions (list[Any]): List of predictions.
+        root_dir (Path): Root directory containing statistics needed for normalization.
+    """
+
+    name = "Normalize"
+
+    def __init__(self, predictions: list[Any] | None, root_dir: Path) -> None:
+        super().__init__()
+        self.predictions = predictions
+        self.root_dir = root_dir
+
+    def run(self, task_id: int | None = None) -> list[Any] | None:
+        """Run normalization job which normalizes image, pixel and box scores.
+
+        Args:
+            task_id: Not used in this case.
+
+        Returns:
+            list[Any]: List of normalized predictions.
+        """
+        del task_id  # not needed here
+
+        # load all statistics needed for normalization
+        stats_path = self.root_dir / "stats.json"
+        with stats_path.open("r") as f:
+            stats = json.load(f)
+        minmax = stats["minmax"]
+        image_threshold = stats["image_threshold"]
+        pixel_threshold = stats["pixel_threshold"]
+
+        logger.info("Starting normalization.")
+
+        for data in tqdm(self.predictions, desc="Normalizing"):
+            data.pred_score = normalize(
+                data.pred_score,
+                image_threshold,
+                minmax["pred_score"]["min"],
+                minmax["pred_score"]["max"],
+            )
+            if hasattr(data, "anomaly_map"):
+                data.anomaly_map = normalize(
+                    data.anomaly_map,
+                    pixel_threshold,
+                    minmax["anomaly_map"]["min"],
+                    minmax["anomaly_map"]["max"],
+                )
+
+        return self.predictions
+
+    @staticmethod
+    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
+        """Nothing to collect in this job.
+
+        Returns:
+            list[Any]: List of predictions.
+        """
+        # take the first element as result is list of lists here
+        return results[0]
+
+    @staticmethod
+    def save(results: GATHERED_RESULTS) -> None:
+        """Nothing is saved in this job."""
+
+
+class AOINormalizationJobGenerator(JobGenerator):
+    """Generate NormalizationJob.
+
+    Args:
+        root_dir (Path): Root directory where statistics are saved.
+    """
+
+    def __init__(self, root_dir: Path) -> None:
+        self.root_dir = root_dir
+
+    @property
+    def job_class(self) -> type:
+        """Return the job class."""
+        return AOINormalizationJob
+
+    def generate_jobs(
+        self,
+        args: dict | None = None,
+        prev_stage_result: list[Any] | None = None,
+    ) -> Generator[AOINormalizationJob, None, None]:
+        """Return a generator producing a single normalization job.
+
+        Args:
+            args: not used here.
+            prev_stage_result (list[Any]): Ensemble predictions from previous step.
+
+        Returns:
+            Generator[NormalizationJob, None, None]: NormalizationJob generator.
+        """
+        del args  # not needed here
+
+        yield AOINormalizationJob(prev_stage_result, self.root_dir)
+
+# Copyright (C) 2024-2025 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tiled ensemble - metrics calculation job."""
+
+import logging
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+from tqdm import tqdm
+
+from anomalib.metrics import Evaluator
+from anomalib.pipelines.components import Job, JobGenerator
+from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT, RUN_RESULTS
+
+# from anomalib.utils import NormalizationStage
+# from anomalib.utils.helper_functions import get_ensemble_model
+
+logger = logging.getLogger(__name__)
+
+
+class AOIMetricsCalculationJob(Job):
+    """Job for image and pixel metrics calculation.
+
+    Args:
+        accelerator (str): Accelerator (device) to use.
+        predictions (list[Any]): List of batch predictions.
+        root_dir (Path): Root directory to save checkpoints, stats and images.
+    """
+
+    name = "Metrics"
+
+    def __init__(
+        self,
+        accelerator: str,
+        predictions: list[Any] | None,
+        root_dir: Path,
+        evaluator: Evaluator,
+    ) -> None:
+        super().__init__()
+        self.accelerator = accelerator
+        self.predictions = predictions
+        self.root_dir = root_dir
+        self.evaluator = evaluator
+
+    def run(self, task_id: int | None = None) -> dict:
+        """Run a job that calculates image and pixel level metrics.
+
+        Args:
+            task_id: Not used in this case.
+
+        Returns:
+            dict[str, float]: Dictionary containing calculated metric values.
+        """
+        del task_id  # not needed here
+
+        logger.info("Starting metrics calculation.")
+
+        # add predicted data to metrics
+        for data in tqdm(self.predictions, desc="Calculating metrics"):
+            # on_test_batch_end updates test metrics
+            self.evaluator.on_test_batch_end(None, None, None, batch=data, batch_idx=0)
+
+        # compute all metrics on specified accelerator
+        metrics_dict = {}
+        for metric in self.evaluator.test_metrics:
+            metric.to(self.accelerator)
+            metrics_dict[metric.name] = metric.compute().item()
+            metric.cpu()
+
+        for name, value in metrics_dict.items():
+            print(f"{name}: {value:.4f}")
+
+        # save path used in `save` method
+        metrics_dict["save_path"] = self.root_dir / "metric_results.csv"
+
+        return metrics_dict
+
+    @staticmethod
+    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
+        """Nothing to collect in this job.
+
+        Returns:
+            list[Any]: list of predictions.
+        """
+        # take the first element as result is list of dict here
+        return results[0]
+
+    @staticmethod
+    def save(results: GATHERED_RESULTS) -> None:
+        """Save metrics values to csv."""
+        logger.info("Saving metrics to csv.")
+
+        # get and remove path from stats dict
+        results_path: Path = results.pop("save_path")
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+
+        df_dict = {k: [v] for k, v in results.items()}
+        metrics_df = pd.DataFrame(df_dict)
+        metrics_df.to_csv(results_path, index=False)
+
+
+class AOIMetricsCalculationJobGenerator(JobGenerator):
+    """Generate MetricsCalculationJob.
+
+    Args:
+        root_dir (Path): Root directory to save checkpoints, stats and images.
+    """
+
+    def __init__(
+        self,
+        accelerator: str,
+        root_dir: Path,
+        model_args: dict,
+    ) -> None:
+        self.accelerator = accelerator
+        self.root_dir = root_dir
+        self.model_args = model_args
+
+    @property
+    def job_class(self) -> type:
+        """Return the job class."""
+        return AOIMetricsCalculationJob
+
+    def generate_jobs(
+        self,
+        args: dict | None = None,
+        prev_stage_result: PREV_STAGE_RESULT = None,
+    ) -> Generator[AOIMetricsCalculationJob, None, None]:
+        """Make a generator that yields a single metrics calculation job.
+
+        Args:
+            args: ensemble run config.
+            prev_stage_result: ensemble predictions from previous step.
+
+        Returns:
+            Generator[MetricsCalculationJob, None, None]: MetricsCalculationJob generator
+        """
+        del args  # args not used here
+
+        model = get_ensemble_model(self.model_args, normalization_stage=NormalizationStage.IMAGE, input_size=(10, 10))
+
+        if model.evaluator is not None:
+            yield AOIMetricsCalculationJob(
+                accelerator=self.accelerator,
+                predictions=prev_stage_result,
+                root_dir=self.root_dir,
+                evaluator=model.evaluator,
+            )
+        else:
+            msg = "Model passed to tiled ensemble has no evaluator module which is required to calculate metrics."
+            raise RuntimeError(msg)
+        
+
+
+from anomalib.pre_processing import PreProcessor
+from anomalib.metrics import AUROC
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
+from anomalib.models import AnomalibModule, get_model
+from torchvision.transforms.v2 import Compose, Resize, Transform
+from anomalib.pre_processing.utils.transform import get_exportable_transform
+
+
+
+def get_ensemble_model(
+    model_args: dict[str,dict[str,Any]],
+    input_size: int | tuple[int, int],
+    normalization_stage: NormalizationStage,
+
+) -> AnomalibModule:
+    """Get model prepared for ensemble training.
+
+    Args:
+        model_args (dict): tiled ensemble model configuration.
+        input_size (int | tuple[int, int]): individual model input size.
+        normalization_stage (NormalizationStage): stage when normalization performed.
+
+    Returns:
+        AnomalyModule: model with input_size setup
+    """
+
+    if isinstance(input_size, int):
+        input_size = (input_size, input_size)
+
+    # Take evaluator out of model args if possible
+    post_processor:PostProcessor|bool = model_args["init_args"].pop("post_processor", False)
+    pre_processor:PreProcessor|bool = model_args["init_args"].pop("pre_processor", False)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
+    evaluator:Evaluator|bool = model_args["init_args"].pop("evaluator", False)
+    visualizer = model_args["init_args"].pop("visualizer", False) 
+    if isinstance(visualizer, ImageVisualizer):
+        visualizer.field_size = input_size
+
+    if not isinstance(evaluator, Evaluator):
+        image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
+        pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
+        image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
+        pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
+        evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
+
+    if isinstance(post_processor, PostProcessor):
+        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
+        post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
+        
+    # first make temporary model to get object
+    temp_model = get_model(model_args)
+
+    # create custom pre_proc with correct input size
+    # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
+    _pre_processor = temp_model.configure_pre_processor(input_size)
+    
+    name = model_args["class_path"]
+
+    model: AnomalibModule = get_model(name, pre_processor=_pre_processor, visualizer=visualizer, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
+    if model.pre_processor is not None:
+        model_pre_processor: PreProcessor = model.pre_processor
+
+        # drop Resize in all cases since it gets copied to datamodule, and we don't want that!
+        pre_transforms = model_pre_processor.transform
+        if isinstance(pre_transforms, Resize):
+            update_transform = []
+        elif isinstance(pre_transforms, Compose):
+            update_transform = Compose([
+                transform for transform in pre_transforms.transforms if not isinstance(transform, Resize)
+            ])
+        elif pre_transforms is not None:
+            update_transform = pre_transforms
+        else:
+            update_transform = []
+
+        model_pre_processor.transform = update_transform
+        model_pre_processor.export_transform = get_exportable_transform(update_transform)
+
+    model_args["init_args"]["post_processor"] = post_processor
+    model_args["init_args"]["pre_processor"] = pre_processor
+    model_args["init_args"]["evaluator"] = evaluator
+    model_args["init_args"]["visualizer"] = visualizer
+
+    return model
+
+# Copyright (C) 2024-2025 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tiled ensemble - visualization job."""
+
+import logging
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
+
+from tqdm import tqdm
+
+from anomalib.pipelines.components import Job, JobGenerator
+from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
+from anomalib.utils.path import generate_output_filename
+from anomalib.visualization import visualize_image_item
+from anomalib.visualization.image.item_visualizer import (
+    DEFAULT_FIELDS_CONFIG,
+    DEFAULT_OVERLAY_FIELDS_CONFIG,
+    DEFAULT_TEXT_CONFIG,
+)
+
+class AOIVisualizationJob(Job):
+    """Job for visualization of predictions.
+
+    Args:
+        predictions (list[Any]): list of image-level predictions.
+        root_dir (Path): Root directory to save checkpoints, stats and images.
+        data_args (Dict): data args used to get data name and category name.
+    """
+
+    name = "Visualize"
+
+    def __init__(self, predictions: list[Any], root_dir: Path, data_args: dict[str,Any], visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
+        super().__init__()
+        self.predictions = predictions
+        self.predMaskImage = pred_mask_image # If this is the prediction mask is saved as a standalone image
+        self.root_dir = root_dir / "images"
+
+        self.fields = visualisation_args.get("fields", None)
+        if self.fields is None:
+            self.fields = ["image", "pred_mask", "gt_mask"]
+        self.overlay_fields = visualisation_args.get("overlay_fields", None)
+        if self.overlay_fields is None:
+            self.overlay_fields = [("image", ["pred_mask"]), ("image", ["anomaly_map"])]
+        self.field_size = visualisation_args.get("field_size", None)
+        if self.field_size is None:
+            self.field_size = (256,256)
+            logger.warning(f"Field size was not given for VisualisationJob. The Visualisation is probaly not right; size of (256,256) is assumed")
+
+        self.fields_config = visualisation_args.get("fields_config", None)
+        if self.fields_config is None:
+            self.fields_config = DEFAULT_FIELDS_CONFIG
+
+        self.overlay_fields_config = visualisation_args.get("overlay_fields_config", None)
+        if self.overlay_fields_config is None:
+            self.overlay_fields_config = DEFAULT_OVERLAY_FIELDS_CONFIG
+
+        self.text_config = visualisation_args.get("text_config", None)
+        if self.text_config is None:
+            self.text_config = DEFAULT_TEXT_CONFIG
+
+        self.dataset_name = data_args["init_args"].get("name", None)
+        if self.dataset_name is None:
+            # if not specified, take class name
+            self.dataset_name = data_args["class_path"].split(".")[-1]
+        self.category = data_args["init_args"].get("category", "")
+
+    def run(self, task_id: int | None = None) -> list[Any]:
+        """Run job that visualizes all prediction data.
+
+        Args:
+            task_id: Not used in this case.
+
+        Returns:
+            list[Any]: Unchanged predictions.
+        """
+        del task_id  # not needed here
+
+        logger.info("Starting visualization.")
+
+        for batch in tqdm(self.predictions, desc="Visualizing"):
+            for item in batch:
+                image = visualize_image_item(
+                    item,
+                    fields=self.fields,
+                    overlay_fields=self.overlay_fields,
+                    field_size=self.field_size,
+                    fields_config=self.fields_config,
+                    overlay_fields_config=self.overlay_fields_config,
+                    text_config=self.text_config,
+                )
+
+                # Get the dataset name and category to save the image
+                filename = generate_output_filename(
+                    input_path=item.image_path or "",
+                    output_path=self.root_dir,
+                    dataset_name=self.dataset_name,
+                    category=self.category,
+                )
+
+                if image is not None:
+                    # Save the image to the specified filename
+                    image.save(filename)
+
+                if self.predMaskImage:
+                    predMask = visualize_image_item(
+                        item,
+                        fields=["pred_mask"],
+                        overlay_fields=None,
+                        field_size=self.field_size,
+                        fields_config=self.fields_config,
+                        overlay_fields_config=self.overlay_fields_config,
+                        text_config={"enable": False},
+                    )
+                    if predMask is not None:
+                        # Save the image to the specified filename
+                        newStem = f"{filename.stem}_predMask"
+                        predMask.save(filename.with_stem(newStem))
+
+        return self.predictions
+
+    @staticmethod
+    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
+        """Nothing to collect in this job.
+
+        Returns:
+            list[Any]: Unchanged list of predictions.
+        """
+        # take the first element as result is list of lists here
+        return results[0]
+
+    @staticmethod
+    def save(results: GATHERED_RESULTS) -> None:
+        """This job doesn't save anything."""
+
+
+class AOIVisualizationJobGenerator(JobGenerator):
+    """Generate VisualizationJob.
+
+    Args:
+        root_dir (Path): Root directory where images will be saved (root/images).
+    """
+
+    def __init__(self, root_dir: Path, data_args: dict[str,Any], visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
+        self.root_dir = root_dir
+        self.data_args = data_args
+        self.visualisation_args = visualisation_args
+        self.pred_mask_image = pred_mask_image
+
+    @property
+    def job_class(self) -> type:
+        """Return the job class."""
+        return AOIVisualizationJob
+
+    def generate_jobs(
+        self,
+        args: dict | None = None,
+        prev_stage_result: list[Any] | None = None,
+    ) -> Generator[AOIVisualizationJob, None, None]:
+        """Return a generator producing a single visualization job.
+
+        Args:
+            args: Ensemble run args.
+            prev_stage_result (list[Any]): Ensemble predictions from previous step.
+
+        Returns:
+            Generator[VisualizationJob, None, None]: VisualizationJob generator
+        """
+        del args  # args not used here
+
+        if prev_stage_result is not None:
+            yield AOIVisualizationJob(prev_stage_result, self.root_dir, data_args=self.data_args, visualisation_args=self.visualisation_args, pred_mask_image=self.pred_mask_image)
+        else:
+            msg = "Visualization job requires tile level predictions from previous step."
+            raise ValueError(msg)
+        
+
+import fiftyone as fo
+
+class AOIFiftyOneVisJob(Job):
+    """Job for visualization of predictions.
+
+    Args:
+        predictions (list[Any]): list of image-level predictions.
+        root_dir (Path): Root directory for images.
+        data_args (Dict): data args used to get data name and category name.
+    """
+
+    name = "Visualize"
+
+    def __init__(self, predictions: list[Any], dataset, data_args: dict[str,Any], modelName:str) -> None:
+        super().__init__()
+        self.predictions = predictions
+        self.dataset = dataset
+        self.data_args = data_args
+        self.modelName = modelName
+        # self.predMaskImage = pred_mask_image # If this is the prediction mask is saved as a standalone image
+        # self.root_dir = root_dir
+
+        # self.fields = visualisation_args.get("fields", None)
+        # if self.fields is None:
+        #     self.fields = ["image", "pred_mask", "gt_mask"]
+        # self.overlay_fields = visualisation_args.get("overlay_fields", None)
+        # if self.overlay_fields is None:
+        #     self.overlay_fields = [("image", ["pred_mask"]), ("image", ["anomaly_map"])]
+        # self.field_size = visualisation_args.get("field_size", None)
+        # if self.field_size is None:
+        #     self.field_size = (256,256)
+        #     logger.warning(f"Field size was not given for VisualisationJob. The Visualisation is probaly not right; size of (256,256) is assumed")
+
+        # self.fields_config = visualisation_args.get("fields_config", None)
+        # if self.fields_config is None:
+        #     self.fields_config = DEFAULT_FIELDS_CONFIG
+
+        # self.overlay_fields_config = visualisation_args.get("overlay_fields_config", None)
+        # if self.overlay_fields_config is None:
+        #     self.overlay_fields_config = DEFAULT_OVERLAY_FIELDS_CONFIG
+
+        # self.text_config = visualisation_args.get("text_config", None)
+        # if self.text_config is None:
+        #     self.text_config = DEFAULT_TEXT_CONFIG
+
+        self.dataset_name = data_args["init_args"].get("name", None)
+        if self.dataset_name is None:
+            # if not specified, take class name
+            self.dataset_name = data_args["class_path"].split(".")[-1]
+        self.category = data_args["init_args"].get("category", "")
+
+    def run(self, task_id: int | None = None) -> list[Any]:
+        """Run job that visualizes all prediction data.
+
+        Args:
+            task_id: Not used in this case.
+
+        Returns:
+            list[Any]: Unchanged predictions.
+        """
+        del task_id  # not needed here
+
+        logger.info("Starting visualisation with Fiftyone.")
+
+        for pred in self.predictions:
+            
+            conf = pred.pred_score.item()
+            anomaly = "anomaly" if pred.pred_label else "normal"
+
+            sample[f"pred_anomaly_score_{self.modelName}"] = conf
+            sample[f"pred_anomaly_{self.modelName}"] = fo.Classification(label=anomaly)
+            sample[f"pred_anomaly_map_{self.modelName}"] = fo.Heatmap(map=pred.anomaly_map.data.numpy().squeeze()*255, range=[0,255])
+            sample[f"pred_defect_mask_{self.modelName}"] = fo.Segmentation(mask=output.pred_mask.data.numpy().squeeze().astype(np.int16)*255)
+
+        for batch in tqdm(self.predictions, desc="Visualizing"):
+            for item in batch:
+                image = visualize_image_item(
+                    item,
+                    fields=self.fields,
+                    overlay_fields=self.overlay_fields,
+                    field_size=self.field_size,
+                    fields_config=self.fields_config,
+                    overlay_fields_config=self.overlay_fields_config,
+                    text_config=self.text_config,
+                )
+
+                # Get the dataset name and category to save the image
+                filename = generate_output_filename(
+                    input_path=item.image_path or "",
+                    output_path=self.root_dir,
+                    dataset_name=self.dataset_name,
+                    category=self.category,
+                )
+
+                if image is not None:
+                    # Save the image to the specified filename
+                    image.save(filename)
+
+                if self.predMaskImage:
+                    predMask = visualize_image_item(
+                        item,
+                        fields=["pred_mask"],
+                        overlay_fields=None,
+                        field_size=self.field_size,
+                        fields_config=self.fields_config,
+                        overlay_fields_config=self.overlay_fields_config,
+                        text_config={"enable": False},
+                    )
+                    if predMask is not None:
+                        # Save the image to the specified filename
+                        newStem = f"{filename.stem}_predMask"
+                        predMask.save(filename.with_stem(newStem))
+
+        return self.predictions
+
+    @staticmethod
+    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
+        """Nothing to collect in this job.
+
+        Returns:
+            list[Any]: Unchanged list of predictions.
+        """
+        # take the first element as result is list of lists here
+        return results[0]
+
+    @staticmethod
+    def save(results: GATHERED_RESULTS) -> None:
+        """This job doesn't save anything."""
+
+
+class AOIFiftyOneVisJobGenerator(JobGenerator):
+    """Generate VisualizationJob.
+
+    Args:
+        root_dir (Path): Root directory where images will be saved (root/images).
+    """
+
+    def __init__(self, dataset, data_args: dict[str,Any], modelName:str) -> None:
+        self.data_args = data_args
+        self.dataset = dataset
+        self.modelName = modelName
+
+    @property
+    def job_class(self) -> type:
+        """Return the job class."""
+        return AOIFiftyOneVisJob
+
+    def generate_jobs(
+        self,
+        args: dict | None = None,
+        prev_stage_result: list[Any] | None = None,
+    ) -> Generator[AOIFiftyOneVisJob, None, None]:
+        """Return a generator producing a single visualization job.
+
+        Args:
+            args: Ensemble run args.
+            prev_stage_result (list[Any]): Ensemble predictions from previous step.
+
+        Returns:
+            Generator[VisualizationJob, None, None]: VisualizationJob generator
+        """
+        del args  # args not used here
+
+        if prev_stage_result is not None:
+            yield AOIFiftyOneVisJob(prev_stage_result, self.dataset, data_args=self.data_args, modelName=self.modelName)
+        else:
+            msg = "Visualization job requires tile level predictions from previous step."
+            raise ValueError(msg)
+
+
+# for sample in sample_collection.iter_samples(autosave=True, progress=True):
+#         output = engine.predict(data_path=sample.filepath, model=model)[0]
+        
+#         conf = output.pred_score.item()
+#         anomaly = "anomaly" if output.pred_label else "normal"
+
+#         sample[f"pred_anomaly_score_{key}"] = conf
+#         sample[f"pred_anomaly_{key}"] = fo.Classification(label=anomaly)
+#         sample[f"pred_anomaly_map_{key}"] = fo.Heatmap(map=output.anomaly_map.data.numpy().squeeze()*255, range=[0,255])
+#         sample[f"pred_defect_mask_{key}"] = fo.Segmentation(mask=output.pred_mask.data.numpy().squeeze().astype(np.int16)*255)
