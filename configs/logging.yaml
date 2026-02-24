@@ -17,18 +17,31 @@ handlers:
     level: WARNING
     formatter: simple
     stream: ext://sys.stderr
-  file:
+  infoFile:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: detailed
+    filename: info.log
+    maxBytes: 10000000
+    backupCount: 3
+  debugFile:
     class: logging.handlers.RotatingFileHandler
     level: DEBUG
     formatter: detailed
-    filename: iad.log
-    maxBytes: 100000
+    filename: debug.log
+    maxBytes: 10000000
     backupCount: 3
 loggers:
   root:
     level: DEBUG
     handlers:
     - stderr
-    - file
     - stdout
+    - debugFile
+    - infoFile
+  # logger:  # This is the MongoDB logger
+  #   level: DEBUG
+  #   handlers:
+  #   - mongodb
+  #   propagate: False
     

@@ -1,19 +1,15 @@
-# Model configuration
-# Ref: https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/efficient_ad.html#anomalib.models.image.efficient_ad.torch_model.EfficientAdModel
-model: "efficientad-m"
-imagenet_dir: "./datasets/imagenette"  # Directory path for the Imagenet dataset. Defaults to "./datasets/imagenette".
-teacher_out_channels: 384            # Number of convolution output channels. Defaults to 384.
-model_size: "medium"    # Size of student and teacher model. Defaults to EfficientAdModelSize.S.
-lr: 0.0001                            # Learning rate. Defaults to 0.0001.
-weight_decay: 0.00001                   # Optimizer weight decay. Defaults to 0.00001.
-padding: True                        # Use padding in convolutional layers. Defaults to False.
-pad_maps: True                         # Relevant if padding=False. If True, pads the output anomaly maps to match size of padding=True case. Defaults to True.
-# pre_processor: true                   # Pre-processor used to transform input data before passing to model. Defaults to True.
-# post_processor: true                  # Post-processor used to process model predictions. Defaults to True.
-# evaluator: true                        # Evaluator used to compute metrics. Defaults to True.
-# visualizer: true                       # Visualizer used to create visualizations. Defaults to True.
-# visualizer: true
-# Non-primitive types: reference other YAML files
-pre_processor: "configs/PreProcessor.yaml"  # or set to false to disable
-post_processor: "configs/PostProcessor.yaml"  # or set to false to disable
-evaluator: "configs/Evaluator.yaml"  # or set to false to disable
+model:
+  class_path : "EfficientAd"
+  init_args:
+    model_size: "m"
+    imagenet_dir: "./datasets/imagenette"  # Directory path for the Imagenet dataset. Defaults to "./datasets/imagenette".
+    teacher_out_channels: 384            # Number of convolution output channels. Defaults to 384.
+    model_size: "medium"    # Size of student and teacher model. Defaults to EfficientAdModelSize.S.
+    lr: 0.0001                            # Learning rate. Defaults to 0.0001.
+    weight_decay: 0.00001                   # Optimizer weight decay. Defaults to 0.00001.
+    padding: True                        # Use padding in convolutional layers. Defaults to False.
+    pad_maps: True      
+    # Non-primitive types: reference other YAML files
+    # pre_processor_path: "PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "Evaluator.yaml"  # or set to false to disable

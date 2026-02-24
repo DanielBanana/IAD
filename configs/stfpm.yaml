@@ -1,9 +1,15 @@
 # Model configuration
-# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/dsr.html
+# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/stfpm.html
 # Non-primitive types: reference other YAML files
-model: "stfpm"
-backbone: "resnet18" # Name of the backbone CNN network used for both teacher and student. Defaults to "resnet18".
-layers: ["layer1", "layer2", "layer3"] # Names of layers from which to extract features. Defaults to ["layer1", "layer2", "layer3"].
-pre_processor: "configs/PreProcessor.yaml"  # or set to false to disable
-post_processor: "configs/PostProcessor.yaml"  # or set to false to disable
-evaluator: "configs/Evaluator.yaml"  # or set to false to disable
+
+model:
+  class_path : Stfpm
+  init_args:
+    backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
+    layers: ["layer1", "layer2", "layer3"]
+    # pre_trained: true
+    # n_features: 100  # Default for resnet18
+    # Non-primitive types: reference other YAML files
+    # pre_processor_path: "PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "Evaluator.yaml"  # or set to false to disable

@@ -4,9 +4,9 @@ default_root_dir:
 # default_root_dir: "results/tiled"
 
 tiling:
-  image_size: [256,256]
-  tile_size: [130,130]
-  stride: [128,128]
+  image_size: [4500,4500]
+  tile_size: [500,500]
+  stride: [500,500]
 
 normalization_stage: image # on what level we normalize, options: [tile, image, none]
 thresholding_stage: image # stage at which we apply threshold, options: [tile, image]

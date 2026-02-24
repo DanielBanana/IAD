@@ -2,9 +2,9 @@ val_metrics:
   - type: "AUROC"
     fields: ["pred_score", "gt_label"]
     prefix: "image_"
-  - type: "AUROC"
-    fields: ["anomaly_map", "gt_mask"]
-    prefix: "pixel_"
+  # - type: "AUROC"
+  #   fields: ["anomaly_map", "gt_mask"]
+  #   prefix: "pixel_"
 
 test_metrics:
   - type: "AUROC"
@@ -13,15 +13,15 @@ test_metrics:
   - type: "F1Score"
     fields: ["pred_label", "gt_label"]
     prefix: "image_"
-  - type: "AUROC"
-    fields: ["anomaly_map", "gt_mask"]
-    prefix: "pixel_"
-  - type: "F1Score"
-    fields: ["pred_mask", "gt_mask"]
-    prefix: "pixel_"
   - type: "AUPR"
     fields: ["pred_score", "gt_label"]
     prefix: "image_"
-  - type: "AUPR"
-    fields: ["anomaly_map", "gt_mask"]
-    prefix: "pixel_"
+  # - type: "AUROC"
+  #   fields: ["anomaly_map", "gt_mask"]
+  #   prefix: "pixel_"
+  # - type: "F1Score"
+  #   fields: ["pred_mask", "gt_mask"]
+  #   prefix: "pixel_"
+  # - type: "AUPR"
+  #   fields: ["anomaly_map", "gt_mask"]
+  #   prefix: "pixel_"

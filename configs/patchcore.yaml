@@ -1,10 +1,4 @@
-# Model configuration
-
-# Non-primitive types: reference other YAML files
-# pre_processor: "PreProcessor.yaml"  # or set to false to disable
-# post_processor: "PostProcessor.yaml"  # or set to false to disable
-# evaluator: "Evaluator.yaml"  # or set to false to disable
-
+# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/patchcore.html
 
 model:
   class_path : Patchcore
@@ -12,10 +6,10 @@ model:
     backbone: "resnet18"  # Available options: resnet18, wide_resnet50_2, etc.
     layers: ["layer2", "layer3"] # Names of layers to extract features from. Defaults is ("layer2", "layer3").
     pre_trained: true # Whether to use pre-trained backbone weights. Defaults is True.
-    coreset_sampling_ratio: 0.05 # Ratio for coreset sampling to subsample embeddings. Defaults is 0.1.
+    coreset_sampling_ratio: 0.1 # Ratio for coreset sampling to subsample embeddings. Defaults is 0.1.
     # precision: "float16"  # set model precision, 'float32' by default TODO: udpate anomalib for this features
-    num_neighbors: 5 # Number of nearest neighbors to use. Defaults is 9.
+    num_neighbors: 9 # Number of nearest neighbors to use. Defaults is 9.
     # Non-primitive types: reference other YAML files
-    pre_processor_path: "PreProcessor.yaml"  # or set to false to disable
+    # pre_processor_path: "PreProcessor.yaml"  # or set to false to disable
     post_processor_path: "PostProcessor.yaml"  # or set to false to disable
     evaluator_path: "Evaluator.yaml"  # or set to false to disable
