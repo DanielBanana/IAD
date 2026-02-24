@@ -142,10 +142,8 @@ def mapNameToModule(modelName:str):
     return model
 
 def create_model(modelName, modelConfig):
-    if modelName == "efficientad-s":
+    if modelName == "EfficientAd":
         # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
-        model = EfficientAd(**modelConfig)
-    elif modelName == "efficientad-m":
         model = EfficientAd(**modelConfig)
     elif modelName == "dsr":
         model = Dsr(**modelConfig)
@@ -162,6 +160,8 @@ def create_model(modelName, modelConfig):
     elif modelName == "fast_flow":
         model = Fastflow(**modelConfig)
     elif modelName == "patchcore":
+        model = Patchcore(**modelConfig)
+    elif modelName == "Patchcore":
         model = Patchcore(**modelConfig)
     elif modelName == "padim":
         model = Padim(**modelConfig)
