@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 from anomalib.data.utils import TestSplitMode
 from anomalib.pipelines.tiled_ensemble.components import (
-    MetricsCalculationJobGenerator,
+    # MetricsCalculationJobGenerator,
     NormalizationJobGenerator,
     ThresholdingJobGenerator,
     VisualizationJobGenerator,
@@ -70,11 +70,21 @@ from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics.evaluator import Evaluator
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
-from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler, TileCollater
+# from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler, TileCollater
 
 from tiling.ensemble_engine import AOITiledEnsembleEngine
-from tiling.jobs import AOIStatisticsJobGenerator, AOIMergeJobGenerator
+from tiling.jobs import (
+    AOIStatisticsJobGenerator,
+    AOIMergeJobGenerator,
+    AOINormalizationJobGenerator,
+    AOIMetricsCalculationJobGenerator,
+    AOIVisualizationJobGenerator,
+    AOIFiftyOneVisJobGenerator,
+    get_ensemble_model
+)
 from anomalib.utils.logging import redirect_logs
+from tiling.ensemble_tiling import EnsembleTiler, TileCollater
+
 
 
 
@@ -99,7 +109,9 @@ class TrainTiledEnsemble(Pipeline):
             List[Runner]: List of runners executing tiled ensemble train + val jobs.
         """
         runners: List[Runner] = []
-        # self.root_dir = AOITiledEnsembleEngine.setup_ensemble_workspace(args) # Path(args["default_root_dir"]) / model_name / dataset_name / category / v_(versionNr)
+
+        gtAvail:bool = False
+
         self.root_dir = args["rootDir"]
         if self.datamodule_args is not None:
             # Overwrite data arguments with given datamodule args (Assuming if they are given that they are more important)
@@ -112,6 +124,12 @@ class TrainTiledEnsemble(Pipeline):
         normalization_stage = NormalizationStage(args["normalization_stage"])
         model_args = args["TrainModels"]["model"] # TODO: Example pipeline is really simple in the amount and type of model arguments
 
+        visualisation_args:dict[str,Any] = {
+            "field_size": tiling_args["image_size"],
+            "fields": ["image", "pred_mask"] if not gtAvail else ["image", "gt_mask", "pred_mask"],
+            "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
+        }
+
         if data_args is None:
             raise AttributeError("Neither data_args nor datamodule given; Quitting.")
         
@@ -123,6 +141,7 @@ class TrainTiledEnsemble(Pipeline):
             root_dir=self.root_dir,
             tiling_args=tiling_args,
             data_args=data_args,
+            model_args = model_args,
             datamodule=self.datamodule,
             normalization_stage=normalization_stage,
         )
@@ -139,7 +158,7 @@ class TrainTiledEnsemble(Pipeline):
             normalization_stage=normalization_stage,
         )
 
-        # fo_predict_job_generator = FOPredictJobGenerator(
+        # predict_job_generator = FOPredictJobGenerator(
         #     PredictData.VAL,
         #     seed=seed,
         #     accelerator=accelerator,
@@ -195,6 +214,8 @@ class TrainTiledEnsemble(Pipeline):
         # 5. calculate statistics used for inference
         runners.append(SerialRunner(AOIStatisticsJobGenerator(self.root_dir)))
 
+        runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(dataset=self.dataset, data_args=data_args, modelName=model_args["class_path"])))
+
         return runners
 
     def setDatamodule(self, datamodule:FODataModule) -> None:
@@ -218,7 +239,7 @@ class TrainTiledEnsemble(Pipeline):
             }
         }
 
-    def setFODataset(self, dataset:fo.Dataset) -> None:
+    def setFODataset(self, dataset) -> None:
         self.dataset = dataset
 
     def run(self, args: dict, logFile) -> None:
@@ -228,7 +249,7 @@ class TrainTiledEnsemble(Pipeline):
             args (Namespace): Arguments to run the pipeline. These are the args returned by ArgumentParser.
         """
         runners:List[Runner] = self._setup_runners(args)
-        redirect_logs(logFile) # dont know what it does
+        # redirect_logs(logFile) # dont know what it does
         previous_results: PREV_STAGE_RESULT = None
 
         for runner in runners:
@@ -253,6 +274,7 @@ class EvalTiledEnsemble(Pipeline):
 
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir)
+        logger.info(f"Root directory for Eval Pipeline: {root_dir}")
         self.datamodule = None
         self.datamodule_args = None
         self.dataset = None
@@ -270,6 +292,8 @@ class EvalTiledEnsemble(Pipeline):
         """
         runners: List[Runner] = []
 
+        gtAvail:bool = False
+
         if self.datamodule_args is not None:
             args["data"] = self.datamodule_args
         if args["data"]["init_args"]["test_split_mode"] == TestSplitMode.NONE:
@@ -283,6 +307,11 @@ class EvalTiledEnsemble(Pipeline):
         normalization_stage = NormalizationStage(args["normalization_stage"])
         thresholding_stage = ThresholdingStage(args["thresholding_stage"])
         model_args = args["TrainModels"]["model"]
+        visualisation_args:dict[str,Any] = {
+            "field_size": tiling_args["image_size"],
+            "fields": ["image", "pred_mask"] if not gtAvail else ["image", "gt_mask", "pred_mask"],
+            "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
+        }
 
         predict_job_generator = PredictJobGenerator(
             PredictData.TEST,
@@ -335,19 +364,19 @@ class EvalTiledEnsemble(Pipeline):
 
         # 4. (optional) normalize
         if normalization_stage == NormalizationStage.IMAGE:
-            runners.append(SerialRunner(NormalizationJobGenerator(self.root_dir)))
+            runners.append(SerialRunner(AOINormalizationJobGenerator(self.root_dir)))
         # 5. (optional) threshold to get labels from scores
         if thresholding_stage == ThresholdingStage.IMAGE:
             runners.append(SerialRunner(ThresholdingJobGenerator(self.root_dir, normalization_stage)))
 
         # 6. visualize predictions
         runners.append(
-            SerialRunner(VisualizationJobGenerator(self.root_dir, data_args=data_args)),
+            SerialRunner(AOIVisualizationJobGenerator(self.root_dir, data_args=data_args, visualisation_args=visualisation_args, pred_mask_image=True)),
         )
         # calculate metrics
         runners.append(
             SerialRunner(
-                MetricsCalculationJobGenerator(
+                AOIMetricsCalculationJobGenerator(
                     accelerator=accelerator,
                     root_dir=self.root_dir,
                     model_args=model_args,
@@ -388,7 +417,7 @@ class EvalTiledEnsemble(Pipeline):
             args (Namespace): Arguments to run the pipeline. These are the args returned by ArgumentParser.
         """
         runners:List[Runner] = self._setup_runners(args)
-        redirect_logs(logFile) # dont know what it does
+        # redirect_logs(logFile) # dont know what it does
         previous_results: PREV_STAGE_RESULT = None
 
         for runner in runners:
@@ -506,6 +535,7 @@ class TrainModelJobGenerator(JobGenerator):
         root_dir: Path,
         tiling_args: dict,
         data_args: dict,
+        model_args: dict,
         datamodule: AnomalibDataModule,
         normalization_stage: NormalizationStage,
     ) -> None:
@@ -513,7 +543,8 @@ class TrainModelJobGenerator(JobGenerator):
         self.accelerator = accelerator
         self.root_dir = root_dir
         self.tiling_args = tiling_args
-        self.data_args = data_args
+        self.data_args = data_args,
+        self.model_args = model_args
         self.datamodule = datamodule
         self.normalization_stage = normalization_stage
 
@@ -558,7 +589,7 @@ class TrainModelJobGenerator(JobGenerator):
                 datamodule=self.datamodule
             )
             model = get_ensemble_model(
-                model_args=args["model"],
+                model_args=self.model_args,
                 normalization_stage=self.normalization_stage,
                 input_size=self.tiling_args["tile_size"],
             )
@@ -806,7 +837,7 @@ class PredictJobGenerator(JobGenerator):
         data_args: dict,
         model_args: dict,
         normalization_stage: NormalizationStage,
-        datamodule
+        datamodule:AnomalibDataModule
     ) -> None:
         self.data_source = data_source
         self.seed = seed
@@ -893,6 +924,7 @@ class PredictJobGenerator(JobGenerator):
                 normalization_stage=self.normalization_stage,
                 model=model,
                 dataloader=dataloader,
+                # dataloader=None,
                 engine=engine,
                 ckpt_path=ckpt_path,
             )
@@ -1006,7 +1038,7 @@ class FOPredictJobGenerator(JobGenerator):
                 engine=engine,
                 ckpt_path=ckpt_path,
                 foDataset=self.dataset,
-                key="PaDiM"
+                key=self.model_args["class_path"]
             )
 
 """Helper functions for the tiled ensemble training."""
@@ -1076,152 +1108,6 @@ def setup_transforms(datamodule: AnomalibDataModule, image_size: int | tuple[int
         data_subset = getattr(datamodule, f"{subset_name}_data", None)
         if data_subset is not None:
             data_subset.augmentations = augmentations
-
-def update_model_for_ensemble(
-        model:AnomalibModule,
-        model_args: dict,
-        input_size: int | tuple[int, int],
-        normalization_stage: NormalizationStage,
-) -> AnomalibModule:
-    """Get a already existing model prepared for ensemble training.
-
-    Args:
-        model (AnomalyModule): model configuration.
-        model_args (dict): tiled ensemble model configuration.
-        input_size (int | tuple[int, int]): individual model input size.
-        normalization_stage (NormalizationStage): stage when normalization performed.
-
-    Returns:
-        AnomalyModule: model with input_size setup
-    """
-    if isinstance(input_size, int):
-        input_size = (input_size, input_size)
-
-    # pre_processor:PreProcessor|None = getattr(model, "pre_processor", None)
-    post_processor:PostProcessor|None = getattr(model, "post_processor", None)
-    evaluator:Evaluator|None = getattr(model, "evaluator", None)
-    # visualizer:Visualizer|None = getattr(model, "visualizer", None)
-
-    # create custom pre_processor with correct input size
-    # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
-    pre_processor = model.configure_pre_processor(input_size)
-    model_args.pop("pre_processor", None)
-    
-
-    if evaluator is None:
-        image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
-        pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
-        image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
-        pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
-        evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
-    else:
-        # Model contains an evaluator; We don't need the one inside the model_args
-        model_args.pop("evaluator", None)
-
-
-    if post_processor is not None:
-        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
-        post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
-        model_args.pop("post_processor", None)
-
-
-    # make actual model with correct input size
-    model: AnomalibModule = get_model(model_args,
-                                      pre_processor=pre_processor,
-                                      visualizer=False,
-                                      evaluator=evaluator,
-                                      post_processor=post_processor)
-    
-    # This part is taken from the get_ensemble_model from the anomalib creators; I don't know what it
-    if model.pre_processor is not None:
-        model_pre_processor: PreProcessor = model.pre_processor
-        # drop Resize in all cases since it gets copied to datamodule, and we don't want that!
-        pre_transforms = model_pre_processor.transform
-        if isinstance(pre_transforms, Resize):
-            update_transform = []
-        elif isinstance(pre_transforms, Compose):
-            update_transform = Compose([
-                transform for transform in pre_transforms.transforms if not isinstance(transform, Resize)
-            ])
-        elif pre_transforms is not None:
-            update_transform = pre_transforms
-        else:
-            update_transform = []
-
-        model_pre_processor.transform = update_transform
-        model_pre_processor.export_transform = get_exportable_transform(update_transform)
-
-    return model
-
-def get_ensemble_model(
-    model_args: dict[str,dict[str,Any]],
-    input_size: int | tuple[int, int],
-    normalization_stage: NormalizationStage,
-
-) -> AnomalibModule:
-    """Get model prepared for ensemble training.
-
-    Args:
-        model_args (dict): tiled ensemble model configuration.
-        input_size (int | tuple[int, int]): individual model input size.
-        normalization_stage (NormalizationStage): stage when normalization performed.
-
-    Returns:
-        AnomalyModule: model with input_size setup
-    """
-
-    # make actual model with correct input size
-
-    # Take evaluator out of model args if possible
-    post_processor:PostProcessor|bool = model_args["init_args"].pop("post_processor", False)
-    pre_processor:PreProcessor|bool = model_args["init_args"].pop("pre_processor", False)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
-    evaluator:Evaluator|bool = model_args["init_args"].pop("evaluator", False)
-    _ = model_args["init_args"].pop("visualizer", None) 
-
-    if not isinstance(evaluator, Evaluator):
-        image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
-        pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
-        image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
-        pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
-        evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
-
-    if isinstance(post_processor, PostProcessor):
-        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
-        post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
-        
-    # first make temporary model to get object
-    temp_model = get_model(model_args)
-    if isinstance(input_size, int):
-        input_size = (input_size, input_size)
-    # create custom pre_proc with correct input size
-    # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
-    pre_processor = temp_model.configure_pre_processor(input_size)
-    
-    name = model_args["class_path"]
-
-
-    model: AnomalibModule = get_model(name, pre_processor=pre_processor, visualizer=False, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
-    if model.pre_processor is not None:
-        model_pre_processor: PreProcessor = model.pre_processor
-
-        # drop Resize in all cases since it gets copied to datamodule, and we don't want that!
-        pre_transforms = model_pre_processor.transform
-        if isinstance(pre_transforms, Resize):
-            update_transform = []
-        elif isinstance(pre_transforms, Compose):
-            update_transform = Compose([
-                transform for transform in pre_transforms.transforms if not isinstance(transform, Resize)
-            ])
-        elif pre_transforms is not None:
-            update_transform = pre_transforms
-        else:
-            update_transform = []
-
-        model_pre_processor.transform = update_transform
-        model_pre_processor.export_transform = get_exportable_transform(update_transform)
-
-    return model
-
 
 def get_ensemble_tiler(tiling_args: dict) -> EnsembleTiler:
     """Get tiler used for image tiling and to obtain tile dimensions.
