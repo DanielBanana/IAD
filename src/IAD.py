@@ -18,33 +18,28 @@ from logging.config import dictConfig
 # from numpy.typing import NDArray 
 # from jsonargparse import ArgumentParser, Namespace
 # from cv2.typing import MatLike
-from enum import Enum, IntFlag, auto
+from enum import IntFlag, auto
 # from logging import Logger
 # from contextlib import contextmanager
 from fiftyone import ViewField as F # helper for defining views
 from pathlib import Path
 # from copy import deepcopy
 # from functools import partial
-from typing import Any, List, Tuple, Dict, Optional
+from typing import Any, List, Tuple, Optional
 
 
 # FIFTYONE
 import fiftyone.core.dataset as fod
 
 # ANOMALIB
-import anomalib.models
-# from anomalib.models import Padim
-# from anomalib.metrics import Evaluator
+
 from anomalib.deploy import ExportType
-# from anomalib.post_processing import PostProcessor
-# from anomalib.pre_processing import PreProcessor
-# from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 from anomalib.callbacks import LoadModelCallback
 from anomalib.models.components import AnomalibModule
-from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
-from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
+from anomalib.loggers import AnomalibWandbLogger
+from anomalib.callbacks import ModelCheckpoint, TimerCallback
 from anomalib.engine import Engine
-from anomalib.data.utils import DirType, LabelName, Split
+from anomalib.data.utils import Split
 # from lightning.pytorch.core import LightningModule
 
 # PYTROCH LIGHTNING
@@ -52,16 +47,15 @@ from lightning.pytorch import Callback
 from lightning.pytorch.callbacks import TQDMProgressBar
 
 # OWN FILES
-from AnomalyDataset import TestDataImporter, TrainTestDataImporter, importDataset, importPredictDataset, exportDataset, FODataModule, FODataset
-from setup import create_datamodule, create_model, setupTensorboardLoggingAndCallbacks, LoggerWriter, LoggerStdin, setupWandBLoggingAndCallbacks, mapNameToModule
-from visualisation import clipEmbedding, resnetEmbedding
+from AnomalyDataset import importDataset, exportDataset, FODataModule, importPredictDataset, FODataset
+from setup import mapNameToModule, create_model
+from visualisation import clipEmbedding
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG, ENGINE_PARAMS, DATAMODULE_PARAMS
-from Training import run_inference, train_and_export_model, setupModel
+from Training import run_inference
 # from cameraProcessor import CameraProcessor
 from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble
-from utils import find_first_file, exclude_from_logger, loadConfig, load_transform_from_yaml
+from utils import find_first_file, exclude_from_logger, loadConfig
 from anomalib.visualization import ImageVisualizer
-
 
 os.environ["TRUST_REMOTE_CODE"] = "1"
 
@@ -82,7 +76,7 @@ class IAD():
     def __init__(self, logFileName:str="general.log", outputPath:Path=Path("results"), configDir:Path=Path("configs"), datasetDir:Path=Path("datasets")) -> None:
         self.state:modelFlags = modelFlags.default
         
-        self.dataset:fod.Dataset|None = None
+        self.dataset:FODataset|None = None
         self.datamodule:FODataModule|None = None
         self.datasetName:str|None = None
         self.datasetDir = datasetDir
@@ -296,12 +290,12 @@ class IAD():
         if fo.dataset_exists(datasetName):
             # logger.info(f"Dataset '{datasetName}' exists in database")
             self._dataset = fo.load_dataset(datasetName)
-            if Split.TRAIN in list(self.dataset.tags):
+            if Split.TRAIN in list(self._dataset.tags):
                 self.state |= modelFlags.hasTrainingData
-            if Split.TEST in list(self.dataset.tags):
+            if Split.TEST in list(self._dataset.tags):
                 self.state |= modelFlags.hasValidationData
             self.datasetName = datasetName
-            self.categories = self.dataset.distinct("category.label")
+            self.categories = self._dataset.distinct("category.label")
             logger.info(f"Loaded dataset '{datasetName}' from database!")
         else:
             logger.info(f"Dataset '{datasetName}' does not exist in database")
@@ -321,47 +315,53 @@ class IAD():
             merge -- merge with a potential dataset in the database with the same name? (default: {False})
             split -- Does the data contain training, testing both or prediction data (default: {("train", "test")})
         """
-        if overwrite and merge:
-            logger.info("Overwrite and merge should not both be true. Overwrite is ignored...")
-            overwrite = False
-        elif not datasetPath.exists():
-            FileNotFoundError(f"Dataset {datasetPath} does not exit")
-        elif fo.dataset_exists(datasetName) and not overwrite and not merge:
-            logger.info(f"Dataset '{datasetName}' already exists in database")
-            self.loadDatasetFromDatabase(datasetName)            
-        elif fo.dataset_exists(datasetName) and overwrite:
-            logger.info(f"Dataset '{datasetName}' already exists in database")
-            logger.info("Overwriting")
-            dataset, _ = importDataset(
-                path=datasetPath,
-                name=datasetName,
-                overwrite=overwrite,
-                split=split
-            )
-            self._dataset = dataset
-            self.datasetName = datasetName
-        elif fo.dataset_exists(datasetName) and merge:
-            logger.info(f"Dataset '{datasetName}' already exists in database")
-            logger.info("Merging")
-            dataset, _ = importDataset(
-                path=datasetPath,
-                name=datasetName+"_"+str(self.now),
-                overwrite=False,
-                split=split
-            )
-            self._dataset = fo.load_dataset(datasetName)
-            logger.info(f"Loading {datasetName} from database for merging")
-            self._dataset.merge_samples(dataset)
-            self.datasetName = datasetName
+        if "pred" in split:
+            self._dataset, self.anomalibPredDataset = importPredictDataset(datasetPath, name=datasetName)
         else:
-            dataset, _ = importDataset(
-                path=datasetPath,
-                name=datasetName,
-                overwrite=overwrite,
-                split=split
-            )
-            self._dataset = dataset
-            self.datasetName = datasetName
+            self.anomalibPredDataset = None
+            if overwrite and merge:
+                logger.info("Overwrite and merge should not both be true. Overwrite is ignored...")
+                overwrite = False
+            elif not datasetPath.exists():
+                FileNotFoundError(f"Dataset {datasetPath} does not exit")
+            elif fo.dataset_exists(datasetName) and not overwrite and not merge:
+                logger.info(f"Dataset '{datasetName}' already exists in database")
+                logger.info("Loading from database")
+                self.loadDatasetFromDatabase(datasetName)            
+            elif fo.dataset_exists(datasetName) and overwrite:
+                logger.info(f"Dataset '{datasetName}' already exists in database")
+                logger.info("Overwriting")
+                dataset, _ = importDataset(
+                    path=datasetPath,
+                    name=datasetName,
+                    overwrite=overwrite,
+                    split=split
+                )
+                self._dataset = dataset
+                self.datasetName = datasetName
+            elif fo.dataset_exists(datasetName) and merge:
+                logger.info(f"Dataset '{datasetName}' already exists in database")
+                logger.info("Merging")
+                dataset, _ = importDataset(
+                    path=datasetPath,
+                    name=datasetName+"_"+str(self.now),
+                    overwrite=False,
+                    split=split
+                )
+                self._dataset = fo.load_dataset(datasetName)
+                logger.info(f"Loading {datasetName} from database for merging")
+                self._dataset.merge_samples(dataset)
+                self.datasetName = datasetName
+            else:
+                logger.info(f"Loading {datasetName} from disk")
+                dataset, _ = importDataset(
+                    path=datasetPath,
+                    name=datasetName,
+                    overwrite=overwrite,
+                    split=split
+                )
+                self._dataset = dataset
+                self.datasetName = datasetName
 
         if Split.TRAIN in list(self._dataset.tags):
             self.state |= modelFlags.hasTrainingData
@@ -456,6 +456,10 @@ class IAD():
         """
         if category == "all":
             self.category = None
+            logger.info("Selecting all as category selects all categories")
+            self.dataset = self._dataset
+            logger.info(f"There are {len(self.dataset)} images in the {self.datasetName} dataset")
+
         else:
             if (self.categories == None) or len(self.categories) == 0:
                 raise AttributeError("There are no categories to select from")
@@ -465,6 +469,7 @@ class IAD():
                 logger.info(f"Category found in categories for this dataset:")
                 self.category = category
             self.dataset = self._dataset.filter_labels("category", F("label").is_in([category]))
+            logger.info(f"There are {len(self.dataset)} images in the selected category {category} of the {self.datasetName} dataset")
 
     #####
     # Logging
@@ -554,6 +559,19 @@ class IAD():
         if (tilingConfigPath.suffix == ".yaml") & tilingConfigPath.exists():
             with open(tilingConfigPath, "r") as file:
                 self.tilingConfigDict:dict[str,Any] = yaml.safe_load(file)
+            rootDir:str|None = self.tilingConfigDict.get("rootDir", None)
+            if rootDir is None:
+                self.tilingConfigDict["rootDir"] = self.outputPath
+            else:
+                if rootDir == "":
+                    self.tilingConfigDict["rootDir"] = self.outputPath
+
+            # ckptPath:str|None = self.tilingConfigDict.get("ckptPath", None)
+            # if ckptPath is None:
+            #     self.tilingConfigDict["ckptPath"] = self.ckptPath
+            # else:
+            #     if ckptPath == "":
+            #         self.tilingConfigDict["ckptPath"] = self.ckptPath
         else:
             # logger.info()
             raise FileNotFoundError(f"{tilingConfigPath} file not found.")
@@ -589,12 +607,14 @@ class IAD():
         """
 
         if not trainingConfigPath.suffix == ".yaml":
-            FileNotFoundError("Config file needs to have .yaml suffix")
+            raise FileNotFoundError("Config file needs to have .yaml suffix")
         if not trainingConfigPath.exists():
-            FileNotFoundError("Error: .yaml config file not found in configs folder.")
+            raise FileNotFoundError("Error: .yaml config file not found in configs folder.")
         if tiling and not self.isTilingSetup:
-            if not self.setupTiling(self.tilingConfigPath):
-                AttributeError("tiling is not setup and automated call to setupTiling() failed: Call 'setupTiling()")
+            if self.tilingConfigPath is not None:
+                self.setupTiling(self.tilingConfigPath)
+            else:
+                raise ValueError(f"tilingConfigPath is not set")
 
         with open(trainingConfigPath, 'r') as f:
             self.trainingConfig = yaml.safe_load(f) 
@@ -642,7 +662,7 @@ class IAD():
 
         self.currentSession = fo.launch_app(self.dataset)
 
-    def _trainTiledModel(self, config:dict[str, Any]):
+    def _trainTiledModel(self, config:dict[str, Any], modelConfig:dict[str,Any]|None=None):
         """Train a tiled model on the dataset based on a training config file.
 
         Arguments:
@@ -651,31 +671,35 @@ class IAD():
         Returns:
             the pipeline for the training jobs
         """
+        if modelConfig is not None:
+            self.modelConfig = modelConfig
+
         self._checkBeforeTraining(dataset=True, model=False)
 
         # Setup datamodule for the tiling 
-
-        # transform = load_transform_from_yaml(Path("configs") / "PreProcessor.yaml")
-        # config["train_augmentations"] = transform
-        # config["val_augmentations"] = transform
-        # config["test_augmentations"] = transform
         self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
         self.datamodule = self._setupDatamodule(self.datamoduleParams)
 
         self.adjustOutputPath()
-        self.tilingConfigDict = self.parseTilingConfig(self.tilingConfigPath)
-        trainPipeline = TrainTiledEnsemble()
-        trainPipeline.setDatamodule(datamodule=self.datamodule) # Split the dataset into different dataloaders for training, validation and test
-        trainPipeline.setFODataset(dataset=self.dataset) # The entire dataset with all samples. samples are tagged with split (train, val, test)
-        if self.model:
-            # self.tilingConfigDict["TrainModels"]["model"]["class_path"] = "Padim"
+        if self.tilingConfigPath is not None:
+            self.setupTiling(self.tilingConfigPath)
+        else:
+            ValueError(f"self.tilingConfigPath is not set")
+
+        trainPipeline = TrainTiledEnsemble(rootDir=self.outputPath, datamodule=self.datamodule, dataset=self.dataset)
+        # trainPipeline.setDatamodule(datamodule=self.datamodule) # Split the dataset into different dataloaders for training, validation and test
+        # trainPipeline.setFODataset(dataset=self.dataset) # The entire dataset with all samples. samples are tagged with split (train, val, test)
+        if self.modelConfig is not None:
             self.tilingConfigDict["TrainModels"] = self.modelConfig
+
+        else:
+            raise ValueError("modelConfig missing")
         trainPipeline.run(self.tilingConfigDict, "")
         # trainPipeline.run(args)
         self.trainPipeline = trainPipeline
         return self.trainPipeline
     
-    def predict(self, config:Path, tiling:bool=False):
+    def predict(self, config:Path, tiling:bool=False, ckptPath:Path|None=None):
         """predictuate the current model on the dataset
 
         Arguments: 
@@ -700,17 +724,52 @@ class IAD():
         else:
             self.runName =f"{self.modelName}-{self.datasetName}"
 
+        ckptPath = self.ckptPath.parent.resolve()
 
         self.adjustOutputPath()
         self.setupLogging()
         self.setupCallbacks()
         self.setupWandBLogger(self.runName, self.outputPath, self.version)
         if tiling:
-            self._predictTiledModel(self.trainingConfig)
+            self._predictTiledModel(self.trainingConfig, ckptPath=ckptPath)
         else:
-            self._predictSingleModel(self.trainingConfig)
+            self._evalSingleModel(self.trainingConfig)
         
-    def _predictTiledModel(self, config:dict[str, Any]):
+    def eval(self, config:Path, tiling:bool=False, ckptDir:Path|None=None):
+        """predictuate the current model on the dataset
+
+        Arguments: 
+            config -- path to the config
+
+        Keyword Arguments:
+            tiling -- _description_ (default: {False})
+        """
+        # if not self._checkBeforeTraining():
+        #     exit(1)
+        if not config.suffix == ".yaml":
+            FileNotFoundError("Config file needs to have .yaml suffix")
+        if not config.exists():
+            FileNotFoundError("Error: .yaml config file not found in configs folder.")
+        if tiling and not self.isTilingSetup:
+            AttributeError("tiling is not setup: Call 'setupTiling()")
+
+        with open(config, 'r') as f:
+            self.trainingConfig = yaml.safe_load(f) 
+        if self.category is not None:
+            self.runName = f"{self.modelName}-{self.datasetName}-{self.category}"
+        else:
+            self.runName =f"{self.modelName}-{self.datasetName}"
+
+        self.adjustOutputPath()
+        self.setupLogging()
+        self.setupCallbacks()
+        self.setupWandBLogger(self.runName, self.outputPath, self.version)
+        if tiling:
+            self._evalTiledModel(self.trainingConfig)
+        else:
+            self._evalSingleModel(self.trainingConfig)
+
+    def _evalTiledModel(self, config:dict[str, Any], ckptDir:Path|None=None):
         """Evaluate a tiled model on the dataset
 
         Arguments:
@@ -725,16 +784,18 @@ class IAD():
 
         logger.info("Running tiled ensemble test pipeline.")
         # pass the root dir from train run to load checkpoints
-        if self.tilingConfigPath is not None and not self.isTilingSetup:
-            logger.warning(f"Tiling was not setup put a tilingConfigPath is given. Setting up with {self.tilingConfigPath}")
-            self.tilingConfigDict = self.parseTilingConfig(self.tilingConfigPath)
-        test_pipeline = EvalTiledEnsemble(self.tilingConfigDict["rootDir"])
+        if self.tilingConfigPath is not None:
+            self.setupTiling(self.tilingConfigPath)
+        else:
+            ValueError(f"self.tilingConfigPath is not set")
+        test_pipeline = EvalTiledEnsemble(self.tilingConfigDict["rootDir"], dataset=self.dataset)
         test_pipeline.setDatamodule(datamodule=self.datamodule)
         if self.model:
             self.tilingConfigDict["TrainModels"] = self.modelConfig
+        self.tilingConfigDict["ckptPath"] = ckptDir
         test_pipeline.run(self.tilingConfigDict, "")
 
-    def _predictSingleModel(self, config:dict[str, Any]):
+    def _evalSingleModel(self, config:dict[str, Any]):
         """Evaluate a singular model on the dataset
 
         Arguments:
@@ -756,25 +817,54 @@ class IAD():
 
         self.currentSession = fo.launch_app(self.dataset)
 
-    def parseTilingConfig(self, path:Path):
-        with Path(path).open(encoding="utf-8") as file:
-            tilingConfigDict = yaml.safe_load(file)
-        
-        rootDir:str|None = tilingConfigDict.get("rootDir", None)
-        if rootDir is None:
-            tilingConfigDict["rootDir"] = self.outputPath
-        else:
-            if rootDir == "":
-                tilingConfigDict["rootDir"] = self.outputPath
+    def _predictTiledModel(self, config:dict[str, Any], ckptPath:Path|None):
+        """Evaluate a tiled model on the dataset
 
-        ckptPath:str|None = tilingConfigDict.get("ckptPath", None)
-        if ckptPath is None:
-            tilingConfigDict["ckptPath"] = self.ckptPath
+        Arguments:
+            config -- config dictionary
+        """
+        self._checkBeforeTraining(dataset=True, model=False)
+        # Setup datamodule for the tiling 
+        self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
+        self.datamodule = self._setupDatamodule(self.datamoduleParams)
+
+        self.adjustOutputPath()
+
+        logger.info("Running tiled ensemble pred pipeline.")
+        # pass the root dir from train run to load checkpoints
+        if self.tilingConfigPath is not None:
+            self.setupTiling(self.tilingConfigPath)
         else:
-            if ckptPath == "":
-                tilingConfigDict["ckptPath"] = self.ckptPath
-        self.isTilingSetup = True
-        return tilingConfigDict
+            ValueError(f"self.tilingConfigPath is not set")
+        test_pipeline = EvalTiledEnsemble(self.tilingConfigDict["rootDir"], dataset=self.dataset)
+        test_pipeline.setDatamodule(datamodule=self.datamodule)
+        test_pipeline.dataset = self.anomalibPredDataset
+        if self.model:
+            self.tilingConfigDict["TrainModels"] = self.modelConfig
+        
+        self.tilingConfigDict["ckptPath"] = ckptPath
+        logger.info(f"ckptPath: {ckptPath}")
+        test_pipeline.run(self.tilingConfigDict, "")
+
+    # def parseTilingConfig(self, path:Path):
+    #     with Path(path).open(encoding="utf-8") as file:
+    #         tilingConfigDict = yaml.safe_load(file)
+        
+    #     rootDir:str|None = tilingConfigDict.get("rootDir", None)
+    #     if rootDir is None:
+    #         tilingConfigDict["rootDir"] = self.outputPath
+    #     else:
+    #         if rootDir == "":
+    #             tilingConfigDict["rootDir"] = self.outputPath
+
+    #     ckptPath:str|None = tilingConfigDict.get("ckptPath", None)
+    #     if ckptPath is None:
+    #         tilingConfigDict["ckptPath"] = self.ckptPath
+    #     else:
+    #         if ckptPath == "":
+    #             tilingConfigDict["ckptPath"] = self.ckptPath
+    #     self.isTilingSetup = True
+    #     return tilingConfigDict
 
     #####
     # Export to Disk
@@ -826,19 +916,17 @@ if __name__ == "__main__":
 
     # Try to setup wandb
     wandb.login()
-    iad = IAD()
 
     logger = logging.getLogger("logger")
     logger.debug("This should go to mongodb.log")
 
-    tiling = True
-    modelName ="patchcore"
+    tiling      = True
+    modelName   = "Padim"
     datasetName = "MVTecADShort"
-    
-    category = "all"
-    train = True
-    evaluate = True
-    # category = "all"
+    category    = "cable"
+    train       = False
+    evaluate    = True
+    iad = IAD()
 
     iad.generateModel(f"{modelName}.yaml")
     datasetPath = Path(os.path.join("datasets", datasetName))
@@ -849,17 +937,19 @@ if __name__ == "__main__":
     if iad.dataset is None:
         exit(1)
     if tiling:
-        iad.setupTiling(Path("configs/IrlbacherTiledEnsemble.yaml"))
+        iad.setupTiling(Path("configs/TiledEnsemble.yaml"))
     if train:
         iad.train(Path(f"configs/{modelName}_Training.yaml"), tiling=tiling)
+    # iad.launchSession()
     if evaluate:
         if iad.ckptPath is not None:
             if not tiling:
                 iad.loadCheckpoint(iad.ckptPath, f"{modelName}")
-            iad.predict(Path("configs/Predict.yaml"), tiling=tiling)
+            iad.eval(Path("configs/Eval.yaml"), tiling=tiling)
+    iad.launchSession()
     shutdown = False
     while not shutdown:
-        userInput = input("shutdown?")
+        userInput = input("shutdown?\n")
         if userInput:
             shutdown = True
         
