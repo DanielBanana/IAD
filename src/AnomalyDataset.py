@@ -865,6 +865,15 @@ class FODataModule(AnomalibDataModule):
         samples = read_func(file_path, **pd_kwargs)
         return cls(name, samples, **kwargs)
 
+
+
+from anomalib.data.utils import LabelName, read_image, read_mask
+from torchvision.tv_tensors import Mask
+import torch
+from anomalib.data.dataclasses import DatasetItem, ImageBatch, ImageItem
+
+
+
 class FODataset(AnomalibDataset):
     """Dataset class for loading images from paths and labels defined in a fiftyone Dataset.
 
@@ -949,6 +958,71 @@ class FODataset(AnomalibDataset):
         state = self.__dict__.copy()
         return state
 
+    def __getitem__(self, index: int) -> DatasetItem:
+        """Get dataset item for the given index.
+
+        Args:
+            index (int): Index to get the item.
+
+        Returns:
+            DatasetItem: Dataset item containing image and ground truth (if available).
+
+        Example:
+            >>> dataset = AnomalibDataset()
+            >>> item = dataset[0]
+            >>> isinstance(item.image, torch.Tensor)
+            True
+        """
+        image_path = self.samples.iloc[index].image_path
+        mask_path = self.samples.iloc[index].mask_path
+        label_index = self.samples.iloc[index].label_index
+
+        # Read the image
+        image = read_image(image_path, as_tensor=True)
+
+        # Initialize mask as None
+        gt_mask = None
+
+        # Process based on task type
+        if self.task == TaskType.SEGMENTATION:
+            if label_index == LabelName.NORMAL:
+                # Create zero mask for normal samples
+                gt_mask = Mask(torch.zeros(image.shape[-2:])).to(torch.uint8)
+            elif label_index == LabelName.ABNORMAL:
+                # Read mask for anomalous samples
+                gt_mask = read_mask(mask_path, as_tensor=True)
+            # For UNKNOWN, gt_mask remains None
+
+        # Apply augmentations if available
+        if self.augmentations:
+            if self.task == TaskType.CLASSIFICATION:
+                image = self.augmentations(image)
+            elif self.task == TaskType.SEGMENTATION:
+                # For augmentations that require both image and mask:
+                # - Use a temporary zero mask for UNKNOWN samples
+                # - But preserve the final gt_mask as None for UNKNOWN
+                temp_mask = gt_mask if gt_mask is not None else Mask(torch.zeros(image.shape[-2:])).to(torch.uint8)
+                image, augmented_mask = self.augmentations(image, temp_mask)
+                # Only update gt_mask if it wasn't None before augmentations
+                if gt_mask is not None:
+                    gt_mask = augmented_mask
+
+        # Create gt_label tensor (None for UNKNOWN)
+        gt_label = None if label_index == LabelName.UNKNOWN else torch.tensor(label_index)
+
+        imageItem = ImageItem(
+            image=image,
+            gt_mask=gt_mask,
+            gt_label=gt_label,
+            image_path=image_path,
+            mask_path=mask_path,
+        )
+
+        imageItem.id = self.samples.iloc[index].id
+
+        # Return the dataset item
+        return imageItem
+
 def make_fiftyone_dataset(
     samples: fod.Dataset,
     root: str | Path | None = None,
@@ -998,6 +1072,7 @@ def make_fiftyone_dataset(
     # if "mask_path" in samples.get_field_schema():
     columns.add("mask_path")
     columns.add("label")
+    columns.add("id")
 
     _samples = pd.DataFrame(columns=list(columns))
 
@@ -1040,10 +1115,12 @@ def make_fiftyone_dataset(
         elif sample.label_index == LabelName.ABNORMAL:
             sample["label"] = DirType.ABNORMAL
         elif sample.label_index == LabelName.UNKNOWN:
-            raise ValueError("sample.label_index can`t be UNKNOWN.")
+            sample["label"] = "unknown" # TODO: does this work?
+            # raise ValueError("sample.label_index can`t be UNKNOWN.")
         else:
             raise ValueError(f"sample.label_index {sample.label_index} not known.")
         sampleDict["label"] = sample["label"] 
+        sampleDict["id"] = sample["id"]
         # newDict = {column: sample[column] for column in columns} # TODO Fix if mask are not available
         _samples.loc[len(_samples)] = sampleDict
 
@@ -1139,9 +1216,9 @@ def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...
             max_samples=None,
         )
     elif "train" in split and "test" not in split:
-        return loadTrainingDataFolder(path, name)
+        return loadTrainingDataFolder(path, name, overwrite=overwrite)
     elif "pred" in split:
-        return loadPredictDataset(path, name)
+        return loadPredictDataset(path, name, overwrite=overwrite)
     else:
         raise ValueError("split must be 'train', 'test', ('train', 'test') or pred")
 
@@ -1177,12 +1254,13 @@ def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...
             dataset.tags.append(Split.TEST.value)
     return dataset, info
 
-def loadTrainingDataFolder(path:Path, name:str) -> Tuple[fo.Dataset, None]:
+def loadTrainingDataFolder(path:Path, name:str, overwrite:bool=False) -> Tuple[fo.Dataset, None]:
     split = "train"
     dataset = fo.Dataset.from_dir(
         dataset_dir=path,
         dataset_type=fot.ImageDirectory,
         name=name,
+        overwrite=overwrite
     )
 
     for sample in dataset:
@@ -1198,12 +1276,13 @@ def loadTrainingDataFolder(path:Path, name:str) -> Tuple[fo.Dataset, None]:
     info = None
     return dataset, info
 
-def loadPredictDataset(path:Path, name:str="pred", transform=None, imageSize:Tuple[int,int]=(256,256)):
+def loadPredictDataset(path:Path, name:str="pred", overwrite:bool=False):
     split = "pred"
     dataset = fo.Dataset.from_dir(
         dataset_dir=path,
         dataset_type=fot.ImageDirectory,
         name=name,
+        overwrite=overwrite
     )
     for sample in dataset:
         sample["split"] = split
@@ -1217,17 +1296,13 @@ def loadPredictDataset(path:Path, name:str="pred", transform=None, imageSize:Tup
     info = None
     return dataset, info
 
-def importPredictDataset(path, name="prediction", transform=None, imageSize=(256,256)):
+def importPredictDataset(path, name="prediction"):
     fo_dataset, info = loadPredictDataset(
         path=path,
-        name="prediction",
-        transform=None,
-        imageSize=(256,256)
+        name=name
     )
     anomalib_Dataset = PredictDataset(
         path=path,
-        transform=transform,
-        image_size=imageSize
     )
     return fo_dataset, anomalib_Dataset
 
