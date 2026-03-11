@@ -165,6 +165,8 @@ def create_model(modelName, modelConfig):
         model = Patchcore(**modelConfig)
     elif modelName == "padim":
         model = Padim(**modelConfig)
+    elif modelName == "Padim":
+        model = Padim(**modelConfig)
     else:
         print(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
         model = None
