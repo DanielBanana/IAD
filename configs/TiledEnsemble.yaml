@@ -1,11 +1,11 @@
 seed: 42
-accelerator: "gpu"
+accelerator: "mps"
 default_root_dir: 
 # default_root_dir: "results/tiled"
 
 tiling:
   image_size: [256,256]
-  tile_size: [130,130]
+  tile_size: [128,128]
   stride: [128,128]
 
 normalization_stage: image # on what level we normalize, options: [tile, image, none]
@@ -27,6 +27,7 @@ TrainModels:
           patience: 10
           monitor: pixel_val_AUROC
           mode: max
+  accelerator: "mps"
 
 # data:
 #   class_path: anomalib.data.MVTecAD

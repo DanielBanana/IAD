@@ -1,8 +1,7 @@
-# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/stfpm.html
-
-train_batch_size: 32 # From original paper
-eval_batch_size: 32 # From original paper
-max_epochs: 100 # From original paper
+# Default Predict Yaml
+train_batch_size: 1
+eval_batch_size: 1
+max_epochs: 1 # PaDiM only needs 1 epoch
 max_workers: 8
 test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
 test_split_ratio: 0.2
