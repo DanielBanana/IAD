@@ -1,7 +1,0 @@
-# Model configuration
-# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/dsr.html
-# Non-primitive types: reference other YAML files
-model: "dsr"
-pre_processor: "configs/PreProcessor.yaml"  # or set to false to disable
-post_processor: "configs/PostProcessor.yaml"  # or set to false to disable
-evaluator: "configs/Evaluator.yaml"  # or set to false to disable
