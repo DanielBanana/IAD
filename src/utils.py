@@ -1,10 +1,12 @@
 import os
 import sys
+import yaml
+import torchvision.transforms.v2 as T
+from torchvision.transforms.v2 import Transform
 
 from pathlib import Path
 from contextlib import contextmanager
 
-import yaml
 from anomalib.metrics import Evaluator
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
@@ -13,15 +15,10 @@ from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 from setup import define_metrics
 from settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 import shutil
-import os
-from pathlib import Path
-import yaml
-import torchvision.transforms.v2 as T
-from typing import Any, Dict, Tuple
 
+from typing import Any, Dict, Tuple, List
 from tiling.post_processor import AOIPostProcessor
 from enum import Enum
-
 
 class VisualizerType(Enum):
     train = 0
@@ -76,46 +73,55 @@ def exclude_from_logger():
     finally:
         sys.stdout = original_stdout  # Restore logger stdout
 
-def loadConfig(config_path:Path, copyPath:Path|None=None, vtype:VisualizerType|None=None, fieldSize:Tuple[int,int]|None=None) -> Dict[str,Any]:
+def loadModelConfig(configDir:Path, modelConfigPath:Path, copyDir:Path|None=None, vtype:VisualizerType|None=None, fieldSize:Tuple[int,int]|None=None) -> Tuple[Dict[str,Any], Path|None, Path|None, Path|None]:
     """Load YAML config file."""
 
     # Open the general config file
-    with open(config_path, 'r') as f:
+    with open(modelConfigPath, 'r') as f:
         modelConfig = yaml.safe_load(f)
 
     modelConfig = dict(modelConfig)
 
-    # Directory where the config lies; it is assumed the other config files are in that folder as well
-    configDir:Path = config_path.parent
-
     # If the configs should be copied create the folder and copy the general config
-    if copyPath is not None:
-        copyPath = copyPath / modelConfig["model"]["class_path"]
-        if copyPath is not None:
-            if not copyPath.exists():
-                copyPath.mkdir()
-            _, configFileName = os.path.split(config_path)
-            shutil.copy2(config_path, copyPath / configFileName)
+    if copyDir is not None:
+        relativePath:Path = modelConfigPath.relative_to(configDir)
+        copyPath = copyDir / relativePath
+        copyPath.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(modelConfigPath, copyPath)
 
     # Read the preprocessor and copy if desired
     
-    pre_processor_path:str|None = modelConfig["model"]["init_args"].get("pre_processor_path",None)
-    post_processor_path:str|None = modelConfig["model"]["init_args"].get("post_processor_path",None)
-    evaluator_path:str|None = modelConfig["model"]["init_args"].get("evaluator_path",None)
+    pre_processor:str|None = modelConfig["model"]["init_args"].pop("pre_processor_path",None)
+    post_processor:str|None = modelConfig["model"]["init_args"].pop("post_processor_path",None)
+    evaluator:str|None = modelConfig["model"]["init_args"].pop("evaluator_path",None)
 
-    if pre_processor_path is not None:
-        transform = load_transform_from_yaml(configDir / pre_processor_path, copyPath=copyPath)
+    preProcessorPath:Path|None
+    postProcessorPath:Path|None
+    evaluatorPath:Path|None
+
+    if pre_processor is not None:
+        preProcessorPath = configDir / "Engine" /  Path(pre_processor)
+        if copyDir is not None:
+            relativePath:Path = preProcessorPath.relative_to(configDir)
+            copyPath = copyDir / relativePath
+            copyPath.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(modelConfigPath, copyPath)
+        transform = load_transform_from_yaml(preProcessorPath)
         modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor(transform)
     else:
         modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor()
+        preProcessorPath = None
 
     # Read the Postprocessor and copy if desired
-    if post_processor_path is not None:
-        with open(configDir / post_processor_path, 'r') as f:
+    if post_processor is not None:
+        postProcessorPath = configDir / "Engine" / Path(post_processor)
+        if copyDir is not None:
+            relativePath:Path = postProcessorPath.relative_to(configDir)
+            copyPath = copyDir / relativePath
+            copyPath.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(modelConfigPath, copyPath)
+        with open(postProcessorPath, 'r') as f:
             postProcessorConfig = yaml.safe_load(f)
-        configFileName = post_processor_path.split(os.sep)[-1]
-        if copyPath is not None:
-            shutil.copy2(config_path, os.path.join(copyPath, configFileName))
         modelConfig["model"]["init_args"]["post_processor"] = AOIPostProcessor(**postProcessorConfig)
     else:
         modelConfig["model"]["init_args"]["post_processor"] = AOIPostProcessor(
@@ -125,6 +131,7 @@ def loadConfig(config_path:Path, copyPath:Path|None=None, vtype:VisualizerType|N
             image_sensitivity=0.01,
             pixel_sensitivity=0.01
         )
+        postProcessorPath = None
     
     if vtype is None:
         modelConfig["model"]["init_args"]["visualizer"] = False
@@ -134,25 +141,25 @@ def loadConfig(config_path:Path, copyPath:Path|None=None, vtype:VisualizerType|N
         else:
             modelConfig["model"]["init_args"]["visualizer"] = getVisualizer(vtype=vtype, fieldSize=fieldSize)
 
-    if evaluator_path is not None:
-        if copyPath is not None:
-            configFileName = evaluator_path.split(os.sep)[-1]
-            shutil.copy2(config_path, os.path.join(copyPath, configFileName))
-        modelConfig["model"]["init_args"]["evaluator"] = Evaluator(*load_metrics_from_yaml(configDir / evaluator_path))
+    if evaluator is not None:
+        evaluatorPath = configDir / "Engine" / Path(evaluator)
+        if copyDir is not None:
+            relativePath:Path = evaluatorPath.relative_to(configDir)
+            copyPath = copyDir / relativePath
+            copyPath.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(modelConfigPath, copyPath)
+        modelConfig["model"]["init_args"]["evaluator"] = Evaluator(*load_metrics_from_yaml(evaluatorPath))
     else:
         modelConfig["model"]["init_args"]["evaluator"] = getDefaultEvaluator()
-    return modelConfig
+        evaluatorPath=None
 
-def load_transform_from_yaml(configPath, copyPath=None):
+    return modelConfig, preProcessorPath, postProcessorPath, evaluatorPath
+
+def load_transform_from_yaml(configPath:Path):
     with open(configPath, "r") as f:
-        config = yaml.safe_load(f)
+        config:Dict[str,Any] = yaml.safe_load(f)
 
-    # Copy file to project folder
-    if copyPath is not None:
-        configFileName = configPath.split(os.sep)[-1]
-        shutil.copy2(configPath, os.path.join(copyPath, configFileName))
-
-    transform_list = []
+    transform_list:List[Transform] = []
     for step in config["transform"]:
         transform_name = step["name"]
         transform_args = step["args"]
@@ -160,28 +167,27 @@ def load_transform_from_yaml(configPath, copyPath=None):
         # Get the transform class from torchvision.transforms
         transform_class = getattr(T, transform_name)
         # Instantiate the transform with the provided arguments
-        transform = transform_class(**transform_args)
+        transform:Transform = transform_class(**transform_args)
         transform_list.append(transform)
 
     # Compose all transforms into a pipeline
     return T.Compose(transform_list)
 
-def load_metrics_from_yaml(configPath: Path):
+
+def load_metrics_from_yaml(configPath: Path) -> tuple[List[Any], List[Any]]:
     with open(configPath, "r") as f:
-        config = yaml.safe_load(f)
+        config:Dict[str,List[Dict[str,Any]]] = yaml.safe_load(f)
 
     # Map metric types to their classes
-    metric_classes = {
+    metric_classes: Dict[str,Any] = {
         "AUROC": AUROC,
         "AUPR": AUPR,
         "F1AdaptiveThreshold": F1AdaptiveThreshold,
         "F1Score": F1Score,
     }
 
-    def instantiate_metrics(metrics_config):
-        if metrics_config is None:
-            return None
-        metrics = []
+    def instantiate_metrics(metrics_config:List[Dict[str,Any]]) -> List[Any]:
+        metrics:List[Any] = []
         for metric_config in metrics_config:
             metric_type = metric_config["type"]
             fields = metric_config["fields"]
@@ -191,8 +197,8 @@ def load_metrics_from_yaml(configPath: Path):
             metrics.append(metric)
         return metrics
 
-    val_metrics = instantiate_metrics(config["val_metrics"])
-    test_metrics = instantiate_metrics(config["test_metrics"])
+    val_metrics:List[Any] = instantiate_metrics(config["val_metrics"])
+    test_metrics:List[Any]  = instantiate_metrics(config["test_metrics"])
 
     return val_metrics, test_metrics
 
