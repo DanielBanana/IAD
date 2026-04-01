@@ -11,16 +11,16 @@ from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
 from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Tuple, Dict, List, Any
 
-def define_metrics():
+def define_metrics() -> Tuple[List[Any], List[Any]]:
     # val metrics (needed for early stopping)
     image_auroc = AUROC(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_auroc = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
     image_aupr = AUPR(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_aupr = AUPR(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
     image_f1score = F1AdaptiveThreshold(fields=["pred_score", "gt_label"], prefix="image_")
-    val_metrics = [image_auroc, pixel_auroc, image_aupr, pixel_aupr, image_f1score]
+    val_metrics:List[Any] = [image_auroc, pixel_auroc, image_aupr, pixel_aupr, image_f1score]
 
     # test_metrics
     image_auroc = AUROC(fields=["pred_score", "gt_label"], prefix="image_")
@@ -29,7 +29,7 @@ def define_metrics():
     pixel_f1score = F1Score(fields=["pred_mask", "gt_mask"], prefix="pixel_")
     image_aupr = AUPR(fields=["pred_score", "gt_label"], prefix="image_")
     pixel_aupr = AUPR(fields=["anomaly_map", "gt_mask"], prefix="pixel_")
-    test_metrics = [image_auroc, image_f1score, pixel_auroc, pixel_f1score, image_aupr, pixel_aupr]
+    test_metrics:List[Any]  = [image_auroc, image_f1score, pixel_auroc, pixel_f1score, image_aupr, pixel_aupr]
     
     return val_metrics, test_metrics
 
