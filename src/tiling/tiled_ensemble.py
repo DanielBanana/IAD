@@ -91,14 +91,14 @@ from tiling.ensemble_tiling import EnsembleTiler, TileCollater
 class TrainTiledEnsemble(Pipeline):
     """Tiled ensemble training pipeline."""
 
-    def __init__(self, rootDir:Path, datamodule:FODataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, dataset:AnomalibDataset|None=None, gtAvail:bool=False) -> None:
+    def __init__(self, rootDir:Path, datamodule:FODataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, FO_Dataset:fo.Dataset|None=None, gtAvail:bool=False) -> None:
         self.rootDir:Path = rootDir
         if datamodule is not None:
             self.setDatamodule(datamodule=datamodule)
         else:
             self.datamodule = datamodule
             self.datamoduleArgs:dict[str,Any]|None = datamoduleArgs
-        self.dataset:AnomalibDataset|None = dataset
+        self.FO_Dataset:fo.Dataset|None = FO_Dataset
         self.gtAvail:bool = gtAvail #TODO add function that sets this value
 
     def _setup_runners(self, args: dict[str,Any]) -> List[Runner]:
@@ -121,11 +121,9 @@ class TrainTiledEnsemble(Pipeline):
             raise AttributeError(f"tiling in {self.__class__} arguments missing")
         else:
             tilingArgs:dict[str,Any] = tArgs
-        mArgs:dict[str,Any]|None = args["TrainModels"].get("model",None)
-        if mArgs is None:
+        modelArgs:dict[str,Any]|None = args.get("model",None)
+        if modelArgs is None:
             raise AttributeError(f"model arguments missing from config for {self.__class__} pipeline")
-        else:
-            modelArgs = mArgs
 
         visualisation_args:dict[str,Any] = {
             "field_size": tilingArgs["image_size"],
@@ -155,7 +153,7 @@ class TrainTiledEnsemble(Pipeline):
             root_dir=self.rootDir,
             tiling_args=tilingArgs,
             data_args=dataArgs,
-            model_args = modelArgs,
+            model_args=modelArgs,
             datamodule=self.datamodule,
             normalization_stage=normalization_stage,
         )
@@ -188,7 +186,7 @@ class TrainTiledEnsemble(Pipeline):
             datamodule=self.datamodule,
             model_args=modelArgs,
             normalization_stage=normalization_stage,
-            dataset=None
+            predictionDataset=None
         )
 
         if accelerator == "cuda":
@@ -223,8 +221,8 @@ class TrainTiledEnsemble(Pipeline):
             runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir, normalization_stage)))
         
         # 8 (optional) Associate the results back with the fiftyone dataset where they come from so they can be visualised
-        if self.dataset is not None:
-            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(dataset=self.dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
+        if self.FO_Dataset is not None:
+            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
 
         return runners
 
@@ -281,12 +279,33 @@ class EvalTiledEnsemble(Pipeline):
         root_dir (Path): Path to root dir of run that contains checkpoints.
     """
 
-    def __init__(self, rootDir:Path, datamodule:AnomalibDataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, dataset:AnomalibDataset|None=None, gtAvail:bool=False) -> None:
+    def __init__(self, rootDir:Path, datamodule:AnomalibDataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, FO_Dataset:fo.Dataset|None=None, gtAvail:bool=False, ckptPath:Path|None=None) -> None:
         self.rootDir:Path = rootDir
         self.datamodule = datamodule
         self.datamoduleArgs:dict[str,Any]|None = datamoduleArgs
-        self.dataset = dataset
+        if self.datamoduleArgs is None and self.datamodule is not None:
+            self.datamoduleArgs = {
+                "init_args": {
+                    "name": datamodule.name,
+                    "root": datamodule.root,
+                    "category": datamodule.category,
+                    "train_batch_size": datamodule.train_batch_size,
+                    "eval_batch_size": datamodule.eval_batch_size,
+                    "num_workers": datamodule.num_workers,
+                    "train_augmentations": datamodule.train_augmentations,
+                    "val_augmentations": datamodule.val_augmentations,
+                    "test_augmentations": datamodule.test_augmentations,
+                    "augmentations": None,
+                    "test_split_mode": datamodule.test_split_mode,
+                    "test_split_ratio": datamodule.test_split_ratio,
+                    "val_split_mode": datamodule.val_split_mode,
+                    "val_split_ratio": datamodule.val_split_ratio,
+                }
+            }
+        
+        self.FO_Dataset = FO_Dataset
         self.gtAvail:bool = gtAvail #TODO add function that sets this value
+        self.ckptPath = ckptPath
 
     def _setup_runners(self, args: dict[str,Any]) -> List[Runner]:
         """Set up the runners for the pipeline.
@@ -302,13 +321,12 @@ class EvalTiledEnsemble(Pipeline):
         runners: List[Runner] = []
 
         seed:int = args.get("seed", 42)
-        cPath:str|None = args.get("ckptPath",None)
-        if cPath is None:
-            logger.info(f"No ckptPath given in arguments to {self.__class__}. Going over rootDir")
+        if self.ckptPath is None:
+            logger.info(f"No ckptPath given in arguments to {self.__class__}. Going over rootDir: {self.rootDir}/checkpoints")
             ckptPath:Path = self.rootDir / "checkpoints"
         else:
-            ckptPath:Path = Path(cPath)
-            logger.info(f"Checkpoint path: {ckptPath}")
+            ckptPath:Path = self.ckptPath
+            logger.info(f"Loading Checkpoints from path: {ckptPath}")
         accelerator:str = args.get("accelerator", "cpu")
         normalization_stage = NormalizationStage(args.get("normalization_stage", "none"))
         thresholding_stage = ThresholdingStage(args.get("thresholding_stage", "none"))
@@ -318,7 +336,7 @@ class EvalTiledEnsemble(Pipeline):
         else:
             tilingArgs:dict[str,Any] = tArgs
 
-        mArgs:dict[str,Any]|None = args["TrainModels"].get("model",None)
+        mArgs:dict[str,Any]|None = args.get("model",None)
         if mArgs is None:
             raise AttributeError(f"model arguments missing from config for {self.__class__} pipeline")
         else:
@@ -350,17 +368,17 @@ class EvalTiledEnsemble(Pipeline):
 #############
 
         predict_job_generator = PredictJobGenerator(
-            PredictData.TEST,
+            data_source=PredictData.TEST,
             seed=seed,
             accelerator=accelerator,
             root_dir=self.rootDir,
             tiling_args=tilingArgs,
             data_args=dataArgs,
             datamodule=self.datamodule,
-            dataset=None,
             model_args=modelArgs,
             normalization_stage=normalization_stage,
-            ckptPath=ckptPath
+            ckptPath=ckptPath,
+            predictionDataset=None
         )
 
         # fo_predict_job_generator = FOPredictJobGenerator(
@@ -402,15 +420,17 @@ class EvalTiledEnsemble(Pipeline):
 
         # 4. (optional) normalize
         if normalization_stage == NormalizationStage.IMAGE:
-            runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir)))
+            logger.info(f"Taking stats for Nomalization from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
+            runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent)))
 
         # 5. (optional) threshold to get labels from scores
         if thresholding_stage == ThresholdingStage.IMAGE:
-            runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir, normalization_stage)))
+            logger.info(f"Taking stats for Thresholding from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
+            runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent, normalization_stage)))
 
         # # 6. visualize predictions
-        if self.dataset is not None:
-            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(dataset=self.dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
+        if self.FO_Dataset is not None:
+            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
 
         # calculate metrics
         runners.append(
@@ -479,13 +499,33 @@ class PredTiledEnsemble(Pipeline):
         root_dir (Path): Path to root dir of run that contains checkpoints.
     """
 
-    def __init__(self, root_dir: Path, predictDataset:PredictDataset, dataset:AnomalibDataset|None, datamodule:AnomalibDataModule|None=None, datamoduleArgs:dict[str,Any]|None=None) -> None:
+    def __init__(self, root_dir: Path, predictDataset:PredictDataset, dataset:fo.Dataset, datamodule:FODataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, gtAvail:bool=False) -> None:
         self.root_dir = Path(root_dir)
         logger.info(f"Root directory for Eval Pipeline: {root_dir}")
-        self.dataset:AnomalibDataset|None = dataset
-        self.predictDataset:PredictDataset = predictDataset
+        self.dataset = dataset
+        self.predictDataset = predictDataset
         self.datamodule:AnomalibDataModule|None = datamodule
         self.datamoduleArgs:dict[str,Any]|None = datamoduleArgs
+        self.gtAvail = gtAvail
+        if self.datamoduleArgs is None:
+            self.datamoduleArgs = {
+                "init_args": {
+                    "name": datamodule.name,
+                    "root": datamodule.root,
+                    "category": datamodule.category,
+                    "train_batch_size": datamodule.train_batch_size,
+                    "eval_batch_size": datamodule.eval_batch_size,
+                    "num_workers": datamodule.num_workers,
+                    "train_augmentations": datamodule.train_augmentations,
+                    "val_augmentations": datamodule.val_augmentations,
+                    "test_augmentations": datamodule.test_augmentations,
+                    "augmentations": None,
+                    "test_split_mode": datamodule.test_split_mode,
+                    "test_split_ratio": datamodule.test_split_ratio,
+                    "val_split_mode": datamodule.val_split_mode,
+                    "val_split_ratio": datamodule.val_split_ratio,
+                }
+            }
 
     def _setup_runners(self, args: dict[str,Any]) -> List[Runner]:
         """Set up the runners for the pipeline.
@@ -499,8 +539,6 @@ class PredTiledEnsemble(Pipeline):
             List[Runner]: List of runners executing tiled ensemble testing jobs.
         """
         runners: List[Runner] = []
-
-        gtAvail:bool = False
    
         seed:int = int(args.get("seed", 0))
         ckptPath:Path|str|None = args.get("ckptPath",None)
@@ -542,12 +580,12 @@ class PredTiledEnsemble(Pipeline):
 
         tStage:str|None = args.get("thresholding_stage", None)
         if tStage is None:
-            logger.warning(f"Normaliationstage not given to {self} pipeline")
-            thresholding_stage = NormalizationStage("none")
+            logger.warning(f"ThresholdingStage not given to {self} pipeline")
+            thresholding_stage = ThresholdingStage("image")
         else:
-            thresholding_stage = NormalizationStage(nStage)
+            thresholding_stage = ThresholdingStage(tStage)
         
-        mArgs:dict[str,Any]|None = args.get("model",None)
+        mArgs:dict[str,Any]|None = args["PredModel"].get("model",None)
         if mArgs is None:
             raise AttributeError(f"model arguments missing from config for {self.__class__} pipeline")
         else:
@@ -555,8 +593,8 @@ class PredTiledEnsemble(Pipeline):
 
         visualisation_args:dict[str,Any] = {
             "field_size": tiling_args["image_size"],
-            "fields": ["image", "pred_mask"] if not gtAvail else ["image", "gt_mask", "pred_mask"],
-            "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
+            "fields": ["image", "pred_mask"] if not self.gtAvail else ["image", "gt_mask", "pred_mask"],
+            "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
         }
 
         logger.info(self.dataset)
@@ -600,8 +638,9 @@ class PredTiledEnsemble(Pipeline):
             )
 
         # 4. (optional) normalize
-        if normalization_stage == NormalizationStage.IMAGE:
-            runners.append(SerialRunner(AOINormalizationJobGenerator(self.root_dir)))
+        # if normalization_stage == NormalizationStage.IMAGE:
+        #     runners.append(SerialRunner(AOINormalizationJobGenerator(self.root_dir)))
+
 
         # 5. (optional) threshold to get labels from scores
         if thresholding_stage == ThresholdingStage.IMAGE:
@@ -611,17 +650,16 @@ class PredTiledEnsemble(Pipeline):
         if self.dataset is not None:
             runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(dataset=self.dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
 
-
-        # calculate metrics
-        runners.append(
-            SerialRunner(
-                AOIMetricsCalculationJobGenerator(
-                    accelerator=accelerator,
-                    root_dir=self.root_dir,
-                    model_args=modelArgs,
-                ),
-            ),
-        )
+        # # calculate metrics
+        # runners.append(
+        #     SerialRunner(
+        #         AOIMetricsCalculationJobGenerator(
+        #             accelerator=accelerator,
+        #             root_dir=self.root_dir,
+        #             model_args=modelArgs,
+        #         ),
+        #     ),
+        # )
 
         return runners
     
@@ -923,7 +961,7 @@ class PredictJob(Job):
                 root_dir=self.root_dir,
             )
 
-        logger.info(f"Len dataloader: {len(self.dataloader)}")
+        logger.info(f"Length of dataloader: {len(self.dataloader)}")
         predictions:list[Any]|list[list[Any]]|None = self.engine.predict(model=self.model, dataloaders=self.dataloader, ckpt_path=self.ckpt_path)
 
         # also return tile index as it's needed in collect method
@@ -1080,7 +1118,7 @@ class PredictJobGenerator(JobGenerator):
         model_args: dict[str,Any],
         normalization_stage: NormalizationStage,
         datamodule:AnomalibDataModule|None,
-        dataset:PredictDataset|None,
+        predictionDataset:PredictDataset|None,
         ckptPath:Path|None=None
     ) -> None:
         self.data_source = data_source
@@ -1093,7 +1131,7 @@ class PredictJobGenerator(JobGenerator):
         self.normalization_stage = normalization_stage
         self.datamodule = datamodule
         self.ckptPath = ckptPath
-        self.dataset = dataset
+        self.predictionDataset = predictionDataset
 
     @property
     def job_class(self) -> type:
@@ -1121,7 +1159,7 @@ class PredictJobGenerator(JobGenerator):
         tiler = get_ensemble_tiler(self.tiling_args)
 
         logger.info(
-            "Tiled ensemble predicting started using %s data.",
+            "Tiled ensemble predicting started using Using ckpt_path%s data.",
             self.data_source.value,
         )
         # go over all tile positions
@@ -1144,6 +1182,7 @@ class PredictJobGenerator(JobGenerator):
                 else:
                     raise AttributeError(f"prev_stage_result does not contain engine")
                 ckpt_path = None
+                logger.info(f"Using model from previous training job. No loading from checkpoint")
             else:
                 # any other case - predict is called standalone
                 engine = None
@@ -1161,12 +1200,13 @@ class PredictJobGenerator(JobGenerator):
                     ckpt_path = self.root_dir / "checkpoints" / f"model{tile_i}_{tile_j}.ckpt"
                 else:
                     ckpt_path = self.ckptPath / f"model{tile_i}_{tile_j}.ckpt"
+                logger.info(f"Loading checkpoint from ckpt_path: {ckpt_path}. No Model from previous training job available.")
                 
 
             # pick the dataloader based on predict data
-            if self.dataset:
-                logger.info(f"Dataset for dataloader: {self.dataset}")
-                dataloader:DataLoader[PredictDataset] = DataLoader(self.dataset, collate_fn=datamodule.external_collate_fn, pin_memory=True)
+            if self.predictionDataset:
+                logger.info(f"Dataset for dataloader: {self.predictionDataset}")
+                dataloader:DataLoader[PredictDataset] = DataLoader(self.predictionDataset, collate_fn=datamodule.external_collate_fn, pin_memory=True)
             else:
                 dataloader = datamodule.test_dataloader()
                 if self.data_source == PredictData.VAL:

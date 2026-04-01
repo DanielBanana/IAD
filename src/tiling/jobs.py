@@ -9,29 +9,65 @@ import logging
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
-
 from tqdm import tqdm
+import fiftyone as fo
+from typing import Any, Tuple, Dict, List
+import numpy as np
+import pandas as pd
 
-from anomalib.pipelines.components import Job, JobGenerator
-from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
+
+import torch
+from torch import Tensor
+from torch import nn
+from torchvision.tv_tensors import Image
+from torchvision.transforms.v2 import Compose, Resize, Transform
+
+from lightning import LightningModule, Trainer
 from anomalib.post_processing import PostProcessor
-from anomalib.visualization import ImageVisualizer
+from anomalib.pre_processing import PreProcessor
+from anomalib.metrics import AUROC
+from anomalib.visualization import ImageVisualizer, visualize_image_item
+from anomalib.visualization.image.item_visualizer import (
+    DEFAULT_FIELDS_CONFIG,
+    DEFAULT_OVERLAY_FIELDS_CONFIG,
+    DEFAULT_TEXT_CONFIG,
+)
+from anomalib.data import ImageBatch
+from anomalib.data.dataclasses.torch.base import Batch, DatasetItem, ToNumpyMixin
+from anomalib.utils.normalization.min_max import normalize
+from anomalib.models import AnomalibModule, get_model
+from anomalib.pre_processing.utils.transform import get_exportable_transform
+from anomalib.utils.path import generate_output_filename
+from anomalib.metrics import Evaluator
+
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
+from anomalib.pipelines.tiled_ensemble.components.thresholding import ThresholdingJob
+from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler
+from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import get_ensemble_tiler, get_threshold_values
+from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import EnsemblePredictions
+from anomalib.pipelines.components import Job, JobGenerator
+from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
+
+from AnomalyDataset import FODataModule, FODataset
 
 logger = logging.getLogger(__name__)
 
-from pathlib import Path
-from typing import Any, Tuple, Dict, List
-from anomalib.pipelines.tiled_ensemble.components.stats_calculation import StatisticsJob, StatisticsJobGenerator
-from anomalib.pipelines.tiled_ensemble.components.thresholding import ThresholdingJob
-from AnomalyDataset import FODataModule, FODataset
 
+class AOIStatisticsJob(Job):
+    """Job for calculation statistics about the quality of evaluations.
 
+    Args:
+        predictions: Object containing ensemble predictions.
+        root_dir:
+    """
 
-class AOIStatisticsJob(StatisticsJob):
-    def __init__(self, predictions: List[Any] | None, root_dir: Path) -> None:
-        super().__init__(predictions, root_dir)
+    name = "Statistics"
 
-    def run(self, task_id: int | None = None) -> Tuple[List[Any], Dict[str,Any], ]:
+    def __init__(self, predictions: List[Batch[Image]]|None, root_dir: Path) -> None:
+        self.predictions = predictions
+        self.root_dir = root_dir
+
+    def run(self, task_id: int | None = None) -> Tuple[List[Batch[Image]]|None, Dict[str,Any]]:
         """Run job that calculates statistics needed in post-processing steps.
 
         Args:
@@ -42,15 +78,19 @@ class AOIStatisticsJob(StatisticsJob):
         """
         del task_id  # not needed here
 
+        logger.info("Starting post-processing statistics job calculation.")
+        logger.info("Calculating image/pixel thresholds, pred_score and anomaly_map")
+
+        if self.predictions is None:
+            logger.warning("Predictions are none; this is probably not intended")
+            return self.predictions, dict()
+
         post_processor = PostProcessor()
-
-        logger.info("Starting post-processing statistics calculation.")
-
         for data in tqdm(self.predictions, desc="Stats calculation"):
             # update minmax and thresholds
-            post_processor.on_validation_batch_end(None, None, outputs=data)
+            post_processor.on_validation_batch_end(trainer=Trainer(), pl_module=LightningModule(), outputs=data)
 
-        post_processor.on_validation_epoch_end(None, None)
+        post_processor.on_validation_epoch_end(trainer=Trainer(), pl_module=LightningModule(),)
 
         # return stats with save path that is later used to save statistics.
         return self.predictions, {
@@ -114,8 +154,8 @@ class AOIStatisticsJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
-        prev_stage_result: list[Any] | None = None,
+        args: dict[str,Any] | None = None,
+        prev_stage_result: List[Batch[Image]] | None = None,
     ) -> Generator[AOIStatisticsJob, None, None]:
         """Return a generator producing a single stats calculating job.
 
@@ -139,22 +179,6 @@ class AOIStatisticsJobGenerator(JobGenerator):
 # SPDX-License-Identifier: Apache-2.0
 
 """Tiled ensemble - prediction merging job."""
-
-import logging
-from collections.abc import Generator
-from typing import Any
-
-from tqdm import tqdm
-
-from anomalib.pipelines.components import Job, JobGenerator
-from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
-
-from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler
-from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import get_ensemble_tiler
-from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import EnsemblePredictions
-# from anomalib.pipelines.tiled_ensemble.components.utils.prediction_merging import PredictionMergingMechanism
-
-logger = logging.getLogger(__name__)
 
 class AOIMergeJob(Job):
     """Job for merging tile-level predictions into image-level predictions.
@@ -181,21 +205,17 @@ class AOIMergeJob(Job):
             list[Any]: List of merged predictions.
         """
         del task_id  # not needed here
+        logger.info("Starting merging job to combine tile results.")
 
         merger = PredictionMergingMechanism(self.predictions, self.tiler)
-
-        logger.info("Merging predictions.")
-
-        # merge all batches
         merged_predictions = [
             merger.merge_tile_predictions(batch_idx)
             for batch_idx in tqdm(range(merger.num_batches), desc="Prediction merging")
         ]
-
         return merged_predictions  # noqa: RET504
 
     @staticmethod
-    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
+    def collect(results: List[RUN_RESULTS]) -> GATHERED_RESULTS:
         """Nothing to collect in this job.
 
         Returns:
@@ -212,7 +232,7 @@ class AOIMergeJob(Job):
 class AOIMergeJobGenerator(JobGenerator):
     """Generate MergeJob."""
 
-    def __init__(self, tiling_args: dict, data_args: dict) -> None:
+    def __init__(self, tiling_args: Dict[str, Any], data_args: Dict[str, Any],) -> None:
         super().__init__()
         self.tiling_args = tiling_args
         self.data_args = data_args
@@ -224,7 +244,7 @@ class AOIMergeJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str, Any] | None = None,
         prev_stage_result: EnsemblePredictions | None = None,
     ) -> Generator[AOIMergeJob, None, None]:
         """Return a generator producing a single merging job.
@@ -250,15 +270,6 @@ class AOIMergeJobGenerator(JobGenerator):
 # SPDX-License-Identifier: Apache-2.0
 
 """Class used as mechanism to merge ensemble predictions from each tile into complete whole-image representation."""
-
-import torch
-from torch import Tensor
-
-from anomalib.data import ImageBatch
-
-from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler
-from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import EnsemblePredictions
-
 
 class PredictionMergingMechanism:
     """Class used for merging the data predicted by each separate model of tiled ensemble.
@@ -413,7 +424,7 @@ class PredictionMergingMechanism:
         # merge all tiled data
         for t_key in tiled_data:
             if hasattr(current_batch_data[0, 0], t_key):
-                print(t_key)
+                # print(t_key)
                 merged_predictions[t_key] = self.merge_tiles(current_batch_data, t_key)
 
         # label and score merging
@@ -424,154 +435,19 @@ class PredictionMergingMechanism:
         return ImageBatch(**merged_predictions)
 
 
-# Copyright (C) 2024-2025 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
-
-"""Tiled ensemble - normalization job."""
-
-import json
-import logging
-from collections.abc import Generator
-from pathlib import Path
-from typing import Any
-
-from tqdm import tqdm
-
-from anomalib.pipelines.components import Job, JobGenerator
-from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
-from anomalib.utils.normalization.min_max import normalize
-
-logger = logging.getLogger(__name__)
 
 
-class AOINormalizationJob(Job):
-    """Job for normalization of predictions.
-
-    Args:
-        predictions (list[Any]): List of predictions.
-        root_dir (Path): Root directory containing statistics needed for normalization.
-    """
-
-    name = "Normalize"
-
-    def __init__(self, predictions: list[Any] | None, root_dir: Path) -> None:
-        super().__init__()
-        if isinstance(predictions[0], tuple):
-            self.predictions = predictions[0][0]
-            self.rest = predictions[0][1:]
-        else:
-            self.predictions = predictions
-            self.rest = None
-        self.root_dir = root_dir
-
-    def run(self, task_id: int | None = None) -> list[Any] | None:
-        """Run normalization job which normalizes image, pixel and box scores.
-
-        Args:
-            task_id: Not used in this case.
-
-        Returns:
-            list[Any]: List of normalized predictions.
-        """
-        del task_id  # not needed here
-
-        # load all statistics needed for normalization
-        stats_path = self.root_dir / "stats.json"
-        with stats_path.open("r") as f:
-            stats = json.load(f)
-        minmax = stats["minmax"]
-        image_threshold = stats["image_threshold"]
-        pixel_threshold = stats["pixel_threshold"]
-
-        logger.info("Starting normalization.")
-
-        for data in tqdm(self.predictions, desc="Normalizing"):
-            data.pred_score = normalize(
-                data.pred_score,
-                image_threshold,
-                minmax["pred_score"]["min"],
-                minmax["pred_score"]["max"],
-            )
-            if hasattr(data, "anomaly_map"):
-                data.anomaly_map = normalize(
-                    data.anomaly_map,
-                    pixel_threshold,
-                    minmax["anomaly_map"]["min"],
-                    minmax["anomaly_map"]["max"],
-                )
-
-        return self.predictions, self.rest
-
-    @staticmethod
-    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
-        """Nothing to collect in this job.
-
-        Returns:
-            list[Any]: List of predictions.
-        """
-        # take the first element as result is list of lists here
-        return results[0]
-
-    @staticmethod
-    def save(results: GATHERED_RESULTS) -> None:
-        """Nothing is saved in this job."""
 
 
-class AOINormalizationJobGenerator(JobGenerator):
-    """Generate NormalizationJob.
 
-    Args:
-        root_dir (Path): Root directory where statistics are saved.
-    """
 
-    def __init__(self, root_dir: Path) -> None:
-        self.root_dir = root_dir
 
-    @property
-    def job_class(self) -> type:
-        """Return the job class."""
-        return AOINormalizationJob
 
-    def generate_jobs(
-        self,
-        args: dict | None = None,
-        prev_stage_result: list[Any] | None = None,
-    ) -> Generator[AOINormalizationJob, None, None]:
-        """Return a generator producing a single normalization job.
-
-        Args:
-            args: not used here.
-            prev_stage_result (list[Any]): Ensemble predictions from previous step.
-
-        Returns:
-            Generator[NormalizationJob, None, None]: NormalizationJob generator.
-        """
-        del args  # not needed here
-
-        yield AOINormalizationJob(prev_stage_result, self.root_dir)
 
 # Copyright (C) 2024-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 """Tiled ensemble - metrics calculation job."""
-
-import logging
-from collections.abc import Generator
-from pathlib import Path
-from typing import Any
-
-import pandas as pd
-from tqdm import tqdm
-
-from anomalib.metrics import Evaluator
-from anomalib.pipelines.components import Job, JobGenerator
-from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT, RUN_RESULTS
-
-# from anomalib.utils import NormalizationStage
-# from anomalib.utils.helper_functions import get_ensemble_model
-
-logger = logging.getLogger(__name__)
-
 
 class AOIMetricsCalculationJob(Job):
     """Job for image and pixel metrics calculation.
@@ -589,7 +465,7 @@ class AOIMetricsCalculationJob(Job):
         accelerator: str,
         predictions: list[Any] | None,
         root_dir: Path,
-        evaluator: Evaluator,
+        evaluator: Evaluator|AnomalibModule,
     ) -> None:
         super().__init__()
         self.accelerator = accelerator
@@ -670,7 +546,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         self,
         accelerator: str,
         root_dir: Path,
-        model_args: dict,
+        model_args: Dict[str,Any],
     ) -> None:
         self.accelerator = accelerator
         self.root_dir = root_dir
@@ -683,7 +559,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str,Any] | None = None,
         prev_stage_result: PREV_STAGE_RESULT = None,
     ) -> Generator[AOIMetricsCalculationJob, None, None]:
         """Make a generator that yields a single metrics calculation job.
@@ -710,16 +586,6 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
             msg = "Model passed to tiled ensemble has no evaluator module which is required to calculate metrics."
             raise RuntimeError(msg)
         
-
-
-from anomalib.pre_processing import PreProcessor
-from anomalib.metrics import AUROC
-from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
-from anomalib.models import AnomalibModule, get_model
-from torchvision.transforms.v2 import Compose, Resize, Transform
-from anomalib.pre_processing.utils.transform import get_exportable_transform
-
-
 
 def get_ensemble_model(
     model_args: dict[str,dict[str,Any]],
@@ -771,7 +637,7 @@ def get_ensemble_model(
 
     model: AnomalibModule = get_model(name, pre_processor=_pre_processor, visualizer=visualizer, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
     if model.pre_processor is not None:
-        model_pre_processor: PreProcessor = model.pre_processor
+        model_pre_processor: nn.Module = model.pre_processor
 
         # drop Resize in all cases since it gets copied to datamodule, and we don't want that!
         pre_transforms = model_pre_processor.transform
@@ -800,24 +666,6 @@ def get_ensemble_model(
 # SPDX-License-Identifier: Apache-2.0
 
 """Tiled ensemble - visualization job."""
-
-import logging
-from collections.abc import Generator
-from pathlib import Path
-from typing import Any
-
-from tqdm import tqdm
-
-from anomalib.pipelines.components import Job, JobGenerator
-from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS
-from anomalib.utils.path import generate_output_filename
-from anomalib.visualization import visualize_image_item
-from anomalib.visualization.image.item_visualizer import (
-    DEFAULT_FIELDS_CONFIG,
-    DEFAULT_OVERLAY_FIELDS_CONFIG,
-    DEFAULT_TEXT_CONFIG,
-)
-
 class AOIVisualizationJob(Job):
     """Job for visualization of predictions.
 
@@ -973,11 +821,6 @@ class AOIVisualizationJobGenerator(JobGenerator):
             msg = "Visualization job requires tile level predictions from previous step."
             raise ValueError(msg)
         
-
-import fiftyone as fo
-from fiftyone import ViewField as F
-import numpy as np
-
 class AOIFiftyOneVisJob(Job):
     """Job for visualization of predictions.
 
@@ -989,7 +832,7 @@ class AOIFiftyOneVisJob(Job):
 
     name = "Visualize"
 
-    def __init__(self, predictions: list[Any], dataset:FODataset, dataArgs: dict[str,Any], modelName:str) -> None:
+    def __init__(self, predictions: List[Batch[Image]], FO_Dataset:fo.Dataset, dataArgs: dict[str,Any], modelName:str) -> None:
         super().__init__()
         if isinstance(predictions[0], tuple):
             self.predictions = predictions[0][0]
@@ -997,7 +840,7 @@ class AOIFiftyOneVisJob(Job):
         else:
             self.predictions = predictions
             self.rest = None
-        self.dataset:FODataset = dataset
+        self.FO_Dataset:fo.Dataset = FO_Dataset
         self.dataArgs:dict[str,Any] = dataArgs
         self.modelName:str = modelName
 
@@ -1005,9 +848,9 @@ class AOIFiftyOneVisJob(Job):
         if self.dataset_name is None:
             # if not specified, take class name
             self.dataset_name = dataArgs["class_path"].split(".")[-1]
-        self.category:str = dataArgs["init_args"].get("category",dataset.first().category.label)
+        self.category:str = dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
         if self.category == "":
-            self.category = dataset.first().category.label
+            self.category = FO_Dataset.first().category.label
 
     def run(self, task_id: int | None = None) -> list[Any]:
         """Run job that visualizes all prediction data.
@@ -1025,7 +868,7 @@ class AOIFiftyOneVisJob(Job):
         for batch in self.predictions:
             for pred in batch:
                 path = pred.image_path
-                sample = self.dataset[path]
+                sample = self.FO_Dataset[path]
                 conf = pred.pred_score.item()
                 anomaly = "anomaly" if pred.pred_label else "normal"
 
@@ -1033,9 +876,11 @@ class AOIFiftyOneVisJob(Job):
                 sample[f"pred_anomaly_{self.modelName}"] = fo.Classification(label=anomaly)
                 heatmap = pred.anomaly_map.to("cpu")
                 sample[f"pred_anomaly_map_{self.modelName}"] = fo.Heatmap(map=heatmap.data.numpy().squeeze()*255, range=[0,255])
-                if pred.__getattribute__("pred_mask") is not None:
+                try:
                     mask = pred.pred_mask.to("cpu")
                     sample[f"pred_defect_mask_{self.modelName}"] = fo.Segmentation(mask=mask.data.numpy().squeeze().astype(np.uint8)*255)
+                except:
+                    logger.error("Segmentation prediction mask not available.")
                 sample.save()
         return self.predictions
 
@@ -1061,9 +906,9 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         root_dir (Path): Root directory where images will be saved (root/images).
     """
 
-    def __init__(self, dataset, data_args: dict[str,dict[str,Any]], modelName:str) -> None:
+    def __init__(self, FO_Dataset:fo.Dataset, data_args: dict[str,dict[str,Any]], modelName:str) -> None:
         self.data_args = data_args
-        self.dataset = dataset
+        self.FO_Dataset = FO_Dataset
         self.modelName = modelName
 
     @property
@@ -1088,13 +933,124 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         del args  # args not used here
 
         if prev_stage_result is not None:
-            yield AOIFiftyOneVisJob(prev_stage_result, self.dataset, dataArgs=self.data_args, modelName=self.modelName)
+            yield AOIFiftyOneVisJob(prev_stage_result, self.FO_Dataset, dataArgs=self.data_args, modelName=self.modelName)
         else:
             msg = "Visualization job requires tile level predictions from previous step."
             raise ValueError(msg)
         
-        
-from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import get_threshold_values
+# Copyright (C) 2024-2025 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tiled ensemble - normalization job."""
+class AOINormalizationJob(Job):
+    """Job for normalization of predictions.
+
+    Args:
+        predictions (list[Any]): List of predictions.
+        root_dir (Path): Root directory containing statistics needed for normalization.
+    """
+
+    name = "Normalize"
+
+    def __init__(self, predictions: list[Any] | None, root_dir: Path) -> None:
+        super().__init__()
+        if isinstance(predictions[0], tuple):
+            self.predictions = predictions[0][0]
+            self.rest = predictions[0][1:]
+        else:
+            self.predictions = predictions
+            self.rest = None
+        self.root_dir = root_dir
+
+    def run(self, task_id: int | None = None):
+        """Run normalization job which normalizes image, pixel and box scores.
+
+        Args:
+            task_id: Not used in this case.
+
+        Returns:
+            list[Any]: List of normalized predictions.
+        """
+        del task_id  # not needed here
+
+        # load all statistics needed for normalization
+        stats_path = self.root_dir / "stats.json"
+        with stats_path.open("r") as f:
+            stats = json.load(f)
+        minmax = stats["minmax"]
+        image_threshold = stats["image_threshold"]
+        pixel_threshold = stats["pixel_threshold"]
+
+        logger.info("Starting normalization.")
+        logger.info(f"Unnormalized image threshold is {image_threshold}")
+        logger.info(f"Unnormalized pixel threshold is {pixel_threshold}")
+
+        for data in tqdm(self.predictions, desc="Normalizing"):
+            data.pred_score = normalize(
+                data.pred_score,
+                image_threshold,
+                minmax["pred_score"]["min"],
+                minmax["pred_score"]["max"],
+            )
+            if hasattr(data, "anomaly_map"):
+                data.anomaly_map = normalize(
+                    data.anomaly_map,
+                    pixel_threshold,
+                    minmax["anomaly_map"]["min"],
+                    minmax["anomaly_map"]["max"],
+                )
+
+        logger.info("Normalized anomaly_map and pred_score to 0-1. Threshold of 0.5 is now expected")
+
+        return self.predictions, self.rest
+
+    @staticmethod
+    def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
+        """Nothing to collect in this job.
+
+        Returns:
+            list[Any]: List of predictions.
+        """
+        # take the first element as result is list of lists here
+        return results[0]
+
+    @staticmethod
+    def save(results: GATHERED_RESULTS) -> None:
+        """Nothing is saved in this job."""
+
+
+class AOINormalizationJobGenerator(JobGenerator):
+    """Generate NormalizationJob.
+
+    Args:
+        root_dir (Path): Root directory where statistics are saved.
+    """
+
+    def __init__(self, root_dir: Path) -> None:
+        self.root_dir = root_dir
+
+    @property
+    def job_class(self) -> type:
+        """Return the job class."""
+        return AOINormalizationJob
+
+    def generate_jobs(
+        self,
+        args: dict | None = None,
+        prev_stage_result: list[Any] | None = None,
+    ) -> Generator[AOINormalizationJob, None, None]:
+        """Return a generator producing a single normalization job.
+
+        Args:
+            args: not used here.
+            prev_stage_result (list[Any]): Ensemble predictions from previous step.
+
+        Returns:
+            Generator[NormalizationJob, None, None]: NormalizationJob generator.
+        """
+        del args  # not needed here
+
+        yield AOINormalizationJob(prev_stage_result, self.root_dir)
 
 class AOIThresholdingJob(ThresholdingJob):
     """Job used to threshold predictions, producing labels from scores.
@@ -1109,15 +1065,16 @@ class AOIThresholdingJob(ThresholdingJob):
 
     def __init__(self, predictions: list[Any] | None, image_threshold: float, pixel_threshold: float) -> None:
         if isinstance(predictions[0], tuple):
-            _predictions = predictions[0][0]
+            self.predictions = predictions[0][0]
             self.rest = predictions[0][1:]
         else:
-            _predictions = predictions[0]
-        super().__init__(_predictions, image_threshold, pixel_threshold)
+            self.predictions = predictions
+            self.rest = None
+        super().__init__(self.predictions, image_threshold, pixel_threshold)
         # self.image_threshold = image_threshold
         # self.pixel_threshold = pixel_threshold
 
-    def run(self, task_id: int | None = None) -> list[Any] | None:
+    def run(self, task_id: int | None = None):
         """Run job that produces prediction labels from scores.
 
         Args:
@@ -1129,6 +1086,8 @@ class AOIThresholdingJob(ThresholdingJob):
         del task_id  # not needed here
 
         logger.info("Starting thresholding.")
+        logger.info(f"Image threshold is {self.image_threshold}")
+        logger.info(f"Pixel threshold is {self.pixel_threshold}")
 
         for data in tqdm(self.predictions, desc="Thresholding"):
             if hasattr(data, "pred_score") and data.pred_score is not None:
@@ -1136,7 +1095,7 @@ class AOIThresholdingJob(ThresholdingJob):
             if hasattr(data, "anomaly_map") and data.anomaly_map is not None:
                 data.pred_mask = data.anomaly_map >= self.pixel_threshold
 
-        return self.predictions
+        return self.predictions, self.rest
 
     @staticmethod
     def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
@@ -1193,13 +1152,31 @@ class AOIThresholdingJobGenerator(JobGenerator):
             image_threshold=image_threshold,
             pixel_threshold=pixel_threshold,
         )
-# for sample in sample_collection.iter_samples(autosave=True, progress=True):
-#         output = engine.predict(data_path=sample.filepath, model=model)[0]
-        
-#         conf = output.pred_score.item()
-#         anomaly = "anomaly" if output.pred_label else "normal"
 
-#         sample[f"pred_anomaly_score_{key}"] = conf
-#         sample[f"pred_anomaly_{key}"] = fo.Classification(label=anomaly)
-#         sample[f"pred_anomaly_map_{key}"] = fo.Heatmap(map=output.anomaly_map.data.numpy().squeeze()*255, range=[0,255])
-#         sample[f"pred_defect_mask_{key}"] = fo.Segmentation(mask=output.pred_mask.data.numpy().squeeze().astype(np.int16)*255)
+def get_threshold_values(normalization_stage: NormalizationStage, root_dir: Path) -> tuple[float, float]:
+    """Get threshold values for image and pixel level predictions.
+
+    If normalization is not used, get values based on statistics obtained from validation set.
+    If normalization is used, both image and pixel threshold are 0.5
+
+    Args:
+        normalization_stage (NormalizationStage): ensemble run args, used to get normalization stage.
+        root_dir (Path): path to run root where stats file is saved.
+
+    Returns:
+        tuple[float, float]: image and pixel threshold.
+    """
+    if normalization_stage == NormalizationStage.NONE:
+        logger.info("Normalization is not used. Obtain thresholds from validation set")
+        stats_path = root_dir / "stats.json"
+        with stats_path.open("r") as f:
+            stats = json.load(f)
+        image_threshold = stats["image_threshold"]
+        pixel_threshold = stats["pixel_threshold"]
+    else:
+        logger.info("Normalization is used. both image and pixel threshold are 0.5.")
+        # normalization transforms the scores so that threshold is at 0.5
+        image_threshold = 0.5
+        pixel_threshold = 0.5
+
+    return image_threshold, pixel_threshold
