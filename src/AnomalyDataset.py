@@ -1242,7 +1242,6 @@ def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...
 
             dataset.add_sample(sample)
             splits.add(split)
-
         
         if importer.has_dataset_info:
             info = importer.get_dataset_info()
@@ -1252,6 +1251,7 @@ def importDataset(path:Path, name:str, overwrite:bool=True, split: Tuple[str,...
             dataset.tags.append(Split.TRAIN.value)
     if Split.TRAIN.TEST.value in splits:
             dataset.tags.append(Split.TEST.value)
+
     return dataset, info
 
 def loadTrainingDataFolder(path:Path, name:str, overwrite:bool=False) -> Tuple[fo.Dataset, None]:
@@ -1267,12 +1267,11 @@ def loadTrainingDataFolder(path:Path, name:str, overwrite:bool=False) -> Tuple[f
         sample["split"] = split
         sample["label_index"] = LabelName.NORMAL
         sample["anomalyType"] = "good"
-        sample["category"] = fol.Classification(label=sample.filepath.split(os.sep)[-3])
+        sample["category"] = fol.Classification(label=sample.filepath.split(os.sep)[-4])
         sample["mask_path"] = ""
         sample.tags.append("train")
         sample.save()
-    dataset.tags.append("train")
-        
+    dataset.tags.append(Split.TRAIN.value)    
     info = None
     return dataset, info
 
@@ -1296,13 +1295,16 @@ def loadPredictDataset(path:Path, name:str="pred", overwrite:bool=False):
     info = None
     return dataset, info
 
-def importPredictDataset(path, name="prediction"):
+def importPredictDataset(path:Path, name:str="prediction", overwrite:bool=False) -> Tuple[fo.Dataset, PredictDataset]:
+    fo_dataset:fo.Dataset
     fo_dataset, info = loadPredictDataset(
         path=path,
-        name=name
+        name=name,
+        overwrite=overwrite
     )
-    anomalib_Dataset = PredictDataset(
+    anomalib_Dataset:PredictDataset = PredictDataset(
         path=path,
+        overwrite=overwrite,
     )
     return fo_dataset, anomalib_Dataset
 
