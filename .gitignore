@@ -15,10 +15,7 @@ datasets/traintest
 datasets/Irlbacher2023
 datasets/Irlbacher2023.zip
 
-
 res
-
-results
 
 pre_trained
 
@@ -38,4 +35,7 @@ db
 
 models
 
+
+results
 results_training
+resultsComparison
