@@ -8,7 +8,7 @@ tiling:
   tile_size: [128,128]
   stride: [128,128]
 
-normalization_stage: none # on what level we normalize, options: [tile, image, none]
+normalization_stage: image # on what level we normalize, options: [tile, image, none]
 thresholding_stage: image # stage at which we apply threshold, options: [tile, image]
 
 SeamSmoothing:
