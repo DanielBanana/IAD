@@ -33,7 +33,7 @@ from anomalib.visualization.image.item_visualizer import (
     DEFAULT_OVERLAY_FIELDS_CONFIG,
     DEFAULT_TEXT_CONFIG,
 )
-from anomalib.data import ImageBatch
+from anomalib.data import ImageBatch, ImageItem
 from anomalib.data.dataclasses.torch.base import Batch, DatasetItem, ToNumpyMixin
 from anomalib.utils.normalization.min_max import normalize
 from anomalib.models import AnomalibModule, get_model
@@ -483,6 +483,7 @@ class AOIMetricsCalculationJob(Job):
 
         logger.info(f"Starting {self.name}!.")
         logger.debug(f"{self.name}: Sample: {self.predictions[0].image[0]}")
+        logger.debug(f"{self.name}: Sample: {self.predictions[0].anomaly_map[0]}")
 
         for batch in tqdm(self.predictions, desc="Calculating metrics"):
             self.evaluator.on_test_batch_end(None, None, None, batch=batch, batch_idx=0)
@@ -675,7 +676,7 @@ class AOIVisualizationJob(Job):
             self.predictions = prev_stage_result[0]
             self.rest = prev_stage_result[1:]
         else:
-            self.predictions = prev_stage_result[0]
+            self.predictions = prev_stage_result
         self.predMaskImage = pred_mask_image # If this is the prediction mask is saved as a standalone image
         self.root_dir = root_dir / "images"
 
@@ -720,9 +721,13 @@ class AOIVisualizationJob(Job):
         del task_id  # not needed here
 
         logger.info("Starting visualization.")
-        logger.debug(f"{self.name}: Sample: {self.predictions[0].image[0]}")
+        logger.debug(f"{self.name}: image: {self.predictions[0].image[0]}")
+        logger.debug(f"{self.name}: anomaly_map: {self.predictions[0].anomaly_map[0]}")
+        logger.debug(f"{self.name}: pred_Mask: {self.predictions[0].pred_mask[0]}")
+        logger.debug(f"{self.name}: gt_mask: {self.predictions[0].gt_mask[0]}")
 
         for item in tqdm(self.predictions, desc="Visualizing"):
+            logger.debug(f"{self.name}: item: {item}")
             # for item in batch:
             image = visualize_image_item(
                 item,
@@ -741,6 +746,7 @@ class AOIVisualizationJob(Job):
                 dataset_name=self.dataset_name,
                 category=self.category,
             )
+            logger.debug(f"{self.name}: filename: {filename}")
 
             if image is not None:
                 # Save the image to the specified filename
@@ -988,10 +994,9 @@ class AOINormalizationJob(Job):
         logger.info(f"Unnormalized image threshold is {image_threshold}")
         logger.info(f"Unnormalized pixel threshold is {pixel_threshold}")
         logger.debug(f"{self.name}: Unnormalized sample anomaly map: {self.predictions[0].anomaly_map[0]}")
-
-
-
+        updatedPredictions: List[ImageBatch] = []
         for batch in tqdm(self.predictions, desc="Normalizing"):
+            updatedDataList: List[ImageItem] = []
             for data in batch:
                 if data.pred_score is not None:
                     data.update(pred_score=Tensor(normalize(
@@ -1007,8 +1012,12 @@ class AOINormalizationJob(Job):
                         float(minmax["anomaly_map"]["min"]),
                         float(minmax["anomaly_map"]["max"]),
                     )))
-
+                updatedDataList.append(data)
+            updatedBatch: ImageBatch = ImageBatch.collate(updatedDataList)
+            updatedPredictions.append(updatedBatch)
+        self.predictions = updatedPredictions
         logger.debug(f"{self.name}: Normalized sample anomaly map: {self.predictions[0].anomaly_map[0]}")
+        logger.debug(f"{self.name}: Normalized (updated) sample anomaly map: {updatedPredictions[0].anomaly_map[0]}")
 
 
         logger.info("Normalized anomaly_map and pred_score to 0-1. Threshold of 0.5 is now expected")
@@ -1113,7 +1122,9 @@ class AOIThresholdingJob(ThresholdingJob):
         logger.info(f"Pixel threshold is {self.pixel_threshold}")
         logger.info(f"Number of predictions {len(self.predictions)}")
 
+        updatedPredictions: List[ImageBatch] = []
         for batch in tqdm(self.predictions, desc="Thresholding"):
+            updatedDataList: List[ImageItem] = []
             for data in batch:
                 if hasattr(data, "pred_score") and data.pred_score is not None:
                     data.pred_label = data.pred_score >= self.image_threshold
@@ -1123,6 +1134,10 @@ class AOIThresholdingJob(ThresholdingJob):
                 if hasattr(data, "anomaly_map") and data.anomaly_map is not None:
                     data.pred_mask = data.anomaly_map >= self.pixel_threshold
                     # print(f"anomaly_map: {data.anomaly_map} - threshold {self.pixel_threshold}")
+                updatedDataList.append(data)
+            updatedBatch: ImageBatch = ImageBatch.collate(updatedDataList)
+            updatedPredictions.append(updatedBatch)
+        self.predictions = updatedPredictions
 
         if self.rest is not None:
             return self.predictions, self.rest
@@ -1290,7 +1305,10 @@ class AOISmoothingJob(Job):
         """
         del task_id  # not needed here
         logger.debug(f"{self.name}: Sample: {self.predictions[0].image[0]}")
+
+        updatedPredictions: List[ImageBatch] = []
         for batch in tqdm(self.predictions, desc="Seam smoothing"):
+            updatedDataList: List[ImageItem] = []
             for data in batch:
                 if data.anomaly_map is not None:
                     # move to specified accelerator for faster execution
@@ -1300,6 +1318,10 @@ class AOISmoothingJob(Job):
                     data.anomaly_map = data.anomaly_map.cpu()
                 else:
                     logger.debug(f"{self.name}: Anomaly map is None. No smoothing done.")
+                updatedDataList.append(data)
+            updatedBatch: ImageBatch = ImageBatch.collate(updatedDataList)
+            updatedPredictions.append(updatedBatch)
+        self.predictions = updatedPredictions
 
         return self.predictions
 
