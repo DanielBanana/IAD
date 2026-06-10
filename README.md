@@ -3,7 +3,13 @@
 
 Dies ist ein Programm zur Anomaliedetektion. Es wird entwickelt unter der Kooperation zwischen der TH Nürnberg und der Irlbacher Blickpunkt Glas GmbH. Das Programm verwendet die Anomalib Bibliothek für die Anomaliedetektion und FiftyOne für die Visualisierung der Daten und Ergebnisse.
 
-Im Moment dient ein Command Line Interface (CLI) als hauptsächliche  Interaktionsmethode. Es werden ausserdem .yaml-Konfigurationsdateien verwendet um Modell- oder Trainingseinstellungen zu kommunizieren. 
+Im Moment dienen Jupyter Notebooks als primäre Interaktionsmethode und Beispiele.
+Kurzgesagt funktioniert die Verwendung so:
+    1. Es wird ein Datensatz geladen:
+        1. Aus einem Ordner (siehe "datasets)
+        2. Aus der Datensatzdatenbank in MongoDB (implementiert über Voxel51)
+    2. Es wird ein Modell geladen mittels einer Konfigurationsdatei aus dem Ordner "configs/Models"
+    
 
 # Aktuelle Funktionen
 
