@@ -1,0 +1,14 @@
+# Model configuration
+# https://anomalib.readthedocs.io/en/latest/markdown/guides/reference/models/image/fastflow.html
+# Non-primitive types: reference other YAML files
+model:
+  class_path: "fastflow"
+  init_args:
+    backbone: "resnet18"
+    pre_trained: True
+    flow_steps: 8
+    conv3x3_only: False
+    hidden_ratio: 1.0
+    pre_processor: "PreProcessor.yaml"  # or set to false to disable
+    post_processor: "PostProcessor.yaml"  # or set to false to disable
+    evaluator: "Evaluator.yaml"  # or set to false to disable

@@ -1,0 +1,15 @@
+model:
+  class_path : "EfficientAd"
+  init_args:
+    model_size: "m"
+    imagenet_dir: "./datasets/imagenette"  # Directory path for the Imagenet dataset. Defaults to "./datasets/imagenette".
+    teacher_out_channels: 384            # Number of convolution output channels. Defaults to 384.
+    model_size: "medium"    # Size of student and teacher model. Defaults to EfficientAdModelSize.S.
+    lr: 0.0001                            # Learning rate. Defaults to 0.0001.
+    weight_decay: 0.00001                   # Optimizer weight decay. Defaults to 0.00001.
+    padding: True                        # Use padding in convolutional layers. Defaults to False.
+    pad_maps: True      
+    # Non-primitive types: reference other YAML files
+    # pre_processor_path: "PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "Evaluator.yaml"  # or set to false to disable

@@ -1,0 +1,11 @@
+# Model configuration
+# https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/dsr.html
+# Non-primitive types: reference other YAML files
+model:
+  class_path: "dsr"
+  init_args:
+    latent_anomaly_strength: 0.2 # Strength of the generated anomalies in the latent space. Defaults to 0.2.
+    upsampling_train_ratio: 0.7 #Ratio of training steps for the upsampling module. Defaults to 0.7.
+    # pre_processor_path: "../Engine/PreProcessor.yaml"  # or set to false to disable
+    post_processor_path: "../Engine/PostProcessor.yaml"  # or set to false to disable
+    evaluator_path: "../Engine/Evaluator.yaml.yaml"  # or set to false to disable
