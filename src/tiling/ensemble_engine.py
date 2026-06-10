@@ -1,18 +1,22 @@
+"""
+Amended version of the TiledEnsembleEngine from anomalib. Changed setup of callbacks and workspace for different file access path.
+"""
 #
 # Created on Fri Feb 06 2026
 #
 # Copyright (c) 2026 TH Nuernberg - Daniel Pommer
 #
 
-from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_engine import TiledEnsembleEngine
 from pathlib import Path
+
+from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_engine import TiledEnsembleEngine
+from anomalib.callbacks import ModelCheckpoint, TimerCallback
 from anomalib.utils.path import create_versioned_dir
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lightning.pytorch.callbacks import Callback
 
-from anomalib.callbacks import ModelCheckpoint, TimerCallback
 
 
 class AOITiledEnsembleEngine(TiledEnsembleEngine):

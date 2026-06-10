@@ -1,24 +1,31 @@
+"""
+Short collection of utility function. Should be dissolved into more appropriate files in the long run.
+"""
+
+# GENERAL
 import os
 import sys
 import yaml
 import torchvision.transforms.v2 as T
+import shutil
+from typing import Any, Dict, Tuple, List
+from enum import Enum
 from torchvision.transforms.v2 import Transform
-
 from pathlib import Path
 from contextlib import contextmanager
 
+# ANOMALIB
 from anomalib.metrics import Evaluator
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.visualization import ImageVisualizer
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
-from setup import define_metrics
-from settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-import shutil
 
-from typing import Any, Dict, Tuple, List
-from tiling.post_processor import AOIPostProcessor
-from enum import Enum
+# OWN FILES
+from src.setup import define_metrics
+from src.settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from src.tiling.post_processor import AOIPostProcessor
+
 
 class VisualizerType(Enum):
     train = 0

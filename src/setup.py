@@ -1,17 +1,24 @@
+"""
+Helpful functions for setting up an anomaly detection model
+"""
+
+# GENERAL
 import os
 import sys
 import logging
 import datetime
+from pathlib import Path
+from typing import Literal, Tuple, Dict, List, Any
 
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder
 from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
 from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
+
 from lightning.pytorch.callbacks import TQDMProgressBar
-from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-from pathlib import Path
-from typing import Literal, Tuple, Dict, List, Any
+
+from src.settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 
 def define_metrics() -> Tuple[List[Any], List[Any]]:
     # val metrics (needed for early stopping)
@@ -154,6 +161,8 @@ def create_model(modelName, modelConfig):
     elif modelName == "rd":
         model = ReverseDistillation(**modelConfig)
     elif modelName == "stfpm":
+        model = Stfpm(**modelConfig)
+    elif modelName == "Stfpm":
         model = Stfpm(**modelConfig)
     elif modelName == "fastflow":
         model = Fastflow(**modelConfig)

@@ -1,3 +1,9 @@
+"""
+For managing the data voxel51 is used which allows visualising the data in a web browser. For the anomaly detection anomalib datasets are needed.
+
+
+"""
+
 import csv
 import os
 import inspect
@@ -1287,7 +1293,7 @@ def loadPredictDataset(path:Path, name:str="pred", overwrite:bool=False):
         sample["split"] = split
         sample["label_index"] = LabelName.UNKNOWN
         sample["anomalyType"] = fol.Classification(label="unknown")
-        sample["category"] = fol.Classification(label=sample.filepath.split(os.sep)[-2])
+        sample["category"] = fol.Classification(label=sample.filepath.split(os.sep)[-3])
         sample["mask_path"] = ""
         sample.tags.append("pred")
         sample.save()
@@ -1304,7 +1310,6 @@ def importPredictDataset(path:Path, name:str="prediction", overwrite:bool=False)
     )
     anomalib_Dataset:PredictDataset = PredictDataset(
         path=path,
-        overwrite=overwrite,
     )
     return fo_dataset, anomalib_Dataset
 

@@ -27,7 +27,6 @@ from anomalib.data import Batch, InferenceBatch
 from anomalib.metrics import F1AdaptiveThreshold, MinMax
 from anomalib.post_processing import PostProcessor
 
-
 class AOIPostProcessor(PostProcessor):
     """Post-processor for anomaly detection.
 

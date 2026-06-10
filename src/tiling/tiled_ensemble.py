@@ -1,81 +1,56 @@
+"""
+Tiled ensemble training pipeline.
+"""
 # Copyright (C) 2024-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tiled ensemble training pipeline."""
-
-from typing import TYPE_CHECKING, List
-
-from anomalib.data.utils import ValSplitMode
-
+# GENERAL
 import fiftyone as fo # base library and app
-
 import logging
-
 import torch
+import json
 
-from anomalib.pipelines.components.base import Pipeline, Runner
-from anomalib.pipelines.components.runners import ParallelRunner, SerialRunner
-
-from anomalib.pipelines.tiled_ensemble.components import (
-    # MergeJobGenerator,
-    # PredictJobGenerator,
-    SmoothingJobGenerator,
-    StatisticsJobGenerator
-)
-from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, PredictData
-from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_engine import TiledEnsembleEngine
-from anomalib.data import PredictDataset
-
-
+from typing import TYPE_CHECKING, List, Any
 from collections.abc import Generator
 from itertools import product
 from pathlib import Path
-from anomalib.data import AnomalibDataModule
-from anomalib.models import AnomalibModule
-from anomalib.pipelines.components import Job, JobGenerator
-from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT
-
-from AnomalyDataset import importDataset, FODataModule, FODataset, AnomalibDataset
-
-# from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import (
-#     get_ensemble_datamodule,
-#     get_ensemble_engine,
-#     get_ensemble_model,
-#     get_ensemble_tiler,
-# )
-
-from typing import Any
-from lightning import seed_everything
+from lightning import seed_everything, Trainer
 from torch.utils.data import DataLoader
+from jsonargparse import ArgumentParser, Namespace
+from torchvision.transforms.v2 import Compose, Resize, Transform
+
+
+# ANOMALIB
+from anomalib.data import AnomalibDataModule, ImageBatch, get_datamodule, AnomalibDataModule, PredictDataset
+from anomalib.data.utils import ValSplitMode, TestSplitMode
+from anomalib.models import AnomalibModule, get_model
+from anomalib.pre_processing import PreProcessor
+from anomalib.pre_processing.utils.transform import get_exportable_transform
+from anomalib.post_processing import PostProcessor
+from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
+from anomalib.metrics.evaluator import Evaluator
+from anomalib.utils.logging import redirect_logs
+# ANOMALIB PIPELINES
+from anomalib.pipelines.components import Job, JobGenerator
+from anomalib.pipelines.components.base import Pipeline, Runner
+from anomalib.pipelines.components.runners import ParallelRunner, SerialRunner
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, PredictData, ThresholdingStage
+from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_engine import TiledEnsembleEngine
 from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import EnsemblePredictions
-
-logger = logging.getLogger(__name__)
-
-from anomalib.data.utils import TestSplitMode
 from anomalib.pipelines.tiled_ensemble.components import (
     # MetricsCalculationJobGenerator,
     NormalizationJobGenerator,
     ThresholdingJobGenerator,
     VisualizationJobGenerator,
+    StatisticsJobGenerator
 )
-from anomalib.pipelines.tiled_ensemble.components.utils import ThresholdingStage
+from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT
 
-
-import json
-from jsonargparse import ArgumentParser, Namespace
-from lightning import Trainer
-from torchvision.transforms.v2 import Compose, Resize, Transform
-from anomalib.data import AnomalibDataModule, ImageBatch, get_datamodule
-from anomalib.models import AnomalibModule, get_model
-from anomalib.pre_processing.utils.transform import get_exportable_transform
-from anomalib.post_processing import PostProcessor
-from anomalib.pre_processing import PreProcessor
-from anomalib.metrics.evaluator import Evaluator
-from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
-# from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler, TileCollater
-
-from tiling.ensemble_engine import AOITiledEnsembleEngine
-from tiling.jobs import (
+# OWN FILES
+from src.data.anomaly_datasets import importDataset, FODataModule, FODataset, AnomalibDataset
+from src.tiling.ensemble_engine import AOITiledEnsembleEngine
+from src.tiling.ensemble_tiling import EnsembleTiler, TileCollater
+from src.tiling.jobs import (
     AOIStatisticsJobGenerator,
     AOIMergeJobGenerator,
     AOINormalizationJobGenerator,
@@ -83,10 +58,11 @@ from tiling.jobs import (
     AOIVisualizationJobGenerator,
     AOIFiftyOneVisJobGenerator,
     AOIThresholdingJobGenerator,
+    AOISmoothingJobGenerator,
     get_ensemble_model
 )
-from anomalib.utils.logging import redirect_logs
-from tiling.ensemble_tiling import EnsembleTiler, TileCollater
+
+logger = logging.getLogger(__name__)
 
 class TrainTiledEnsemble(Pipeline):
     """Tiled ensemble training pipeline."""
@@ -205,7 +181,7 @@ class TrainTiledEnsemble(Pipeline):
         if args["SeamSmoothing"]["apply"]:
             runners.append(
                 SerialRunner(
-                    SmoothingJobGenerator(accelerator="cpu", tiling_args=tilingArgs, data_args=dataArgs),
+                    AOISmoothingJobGenerator(accelerator="cpu", tiling_args=tilingArgs, data_args=dataArgs),
                 ),
             )
 
@@ -360,7 +336,6 @@ class EvalTiledEnsemble(Pipeline):
             assert "init_args" in dataArgs.keys()
             assert "val_split_mode" in dataArgs["init_args"]
         
-        runners: List[Runner] = []
         valSplitMode:ValSplitMode = dataArgs["init_args"]["val_split_mode"]
         if valSplitMode == TestSplitMode.NONE:
             logger.info("Test split mode set to `none`, skipping test phase.")
@@ -414,7 +389,7 @@ class EvalTiledEnsemble(Pipeline):
         if args["SeamSmoothing"]["apply"]:
             runners.append(
                 SerialRunner(
-                    SmoothingJobGenerator(accelerator="cpu", tiling_args=tilingArgs, data_args=dataArgs),
+                    AOISmoothingJobGenerator(accelerator="cpu", tiling_args=tilingArgs, data_args=dataArgs),
                 ),
             )
 
@@ -482,8 +457,10 @@ class EvalTiledEnsemble(Pipeline):
         for runner in runners:
             try:
                 job_args = args.get(runner.generator.job_class.name)
+                # Start the runner (serial or parallel) that contains a job/multiple jobs. This calls the
+                # run(), collect() and save() methods of the Jobs to calculate the result of the job, collect the
+                # important bits for the next job (previous_results) and save something to disk if necessary.
                 previous_results = runner.run(job_args or {}, previous_results)
-                # logger.info(f"Finished {runner.generator.job_class.name}.")
             except Exception:  # noqa: PERF203 catch all exception and allow try-catch in loop
                 logger.exception("An error occurred when running the runner.")
                 print(
@@ -499,10 +476,11 @@ class PredTiledEnsemble(Pipeline):
         root_dir (Path): Path to root dir of run that contains checkpoints.
     """
 
-    def __init__(self, root_dir: Path, predictDataset:PredictDataset, dataset:fo.Dataset, datamodule:FODataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, gtAvail:bool=False) -> None:
-        self.root_dir = Path(root_dir)
+    def __init__(self, root_dir: Path, trainingDir:Path, predictDataset:PredictDataset, dataset:fo.Dataset, datamodule:FODataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, gtAvail:bool=False) -> None:
+        self.root_dir = Path(root_dir)                                          # Where this pipeline stores results from
+        self.trainingDir = Path(trainingDir)                                    # Where the training pipeline stored results like threshold and normalization stats
         logger.info(f"Root directory for Eval Pipeline: {root_dir}")
-        self.dataset = dataset
+        self.dataset:fo.Dataset = dataset
         self.predictDataset = predictDataset
         self.datamodule:AnomalibDataModule|None = datamodule
         self.datamoduleArgs:dict[str,Any]|None = datamoduleArgs
@@ -538,6 +516,9 @@ class PredTiledEnsemble(Pipeline):
         Returns:
             List[Runner]: List of runners executing tiled ensemble testing jobs.
         """
+
+        logger.info("Setting up runners")
+
         runners: List[Runner] = []
    
         seed:int = int(args.get("seed", 0))
@@ -565,15 +546,14 @@ class PredTiledEnsemble(Pipeline):
         else:
             assert "init_args" in dataArgs.keys()
             assert "val_split_mode" in dataArgs["init_args"]
-        valSplitMode:ValSplitMode = dataArgs["init_args"]["val_split_mode"]
-        if valSplitMode == TestSplitMode.NONE:
-            logger.info("Test split mode set to `none`, skipping test phase.")
-            return runners
-            
-
+        # valSplitMode:ValSplitMode = dataArgs["init_args"]["val_split_mode"]
+        # if valSplitMode == TestSplitMode.NONE:
+        #     logger.info("Test split mode set to `none`, skipping test phase.")
+        #     return runners
+        
         nStage:str|None = args.get("normalization_stage", None)
         if nStage is None:
-            logger.warning(f"Normaliationstage not given to {self} pipeline")
+            logger.warning(f"Normalization-Stage not given to {self} pipeline")
             normalization_stage = NormalizationStage("none")
         else:
             normalization_stage = NormalizationStage(nStage)
@@ -585,7 +565,7 @@ class PredTiledEnsemble(Pipeline):
         else:
             thresholding_stage = ThresholdingStage(tStage)
         
-        mArgs:dict[str,Any]|None = args["PredModel"].get("model",None)
+        mArgs:dict[str,Any]|None = args.get("model",None)
         if mArgs is None:
             raise AttributeError(f"model arguments missing from config for {self.__class__} pipeline")
         else:
@@ -597,7 +577,10 @@ class PredTiledEnsemble(Pipeline):
             "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
         }
 
-        logger.info(self.dataset)
+        logger.debug(self.dataset)
+
+        logger.debug("Setting up JobGenerators")
+
         predict_job_generator = PredictJobGenerator(
             PredictData.TEST,
             seed=seed,
@@ -605,10 +588,10 @@ class PredTiledEnsemble(Pipeline):
             root_dir=self.root_dir,
             tiling_args=tiling_args,
             data_args=dataArgs,
-            datamodule=self.datamodule,
-            dataset=self.predictDataset,
             model_args=modelArgs,
             normalization_stage=normalization_stage,
+            datamodule=self.datamodule,
+            predictionDataset=self.predictDataset,
             ckptPath=ckptPath
         )
 
@@ -633,22 +616,21 @@ class PredTiledEnsemble(Pipeline):
         if args["SeamSmoothing"]["apply"]:
             runners.append(
                 SerialRunner(
-                    SmoothingJobGenerator(accelerator="cpu", tiling_args=tiling_args, data_args=dataArgs),
+                    AOISmoothingJobGenerator(accelerator="cpu", tiling_args=tiling_args, data_args=dataArgs),
                 ),
             )
 
         # 4. (optional) normalize
-        # if normalization_stage == NormalizationStage.IMAGE:
-        #     runners.append(SerialRunner(AOINormalizationJobGenerator(self.root_dir)))
-
+        if normalization_stage == NormalizationStage.IMAGE:
+             runners.append(SerialRunner(AOINormalizationJobGenerator(self.trainingDir)))
 
         # 5. (optional) threshold to get labels from scores
         if thresholding_stage == ThresholdingStage.IMAGE:
-            runners.append(SerialRunner(AOIThresholdingJobGenerator(self.root_dir, normalization_stage)))
+            runners.append(SerialRunner(AOIThresholdingJobGenerator(self.trainingDir, normalization_stage)))
 
         # # 6. visualize predictions
-        if self.dataset is not None:
-            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(dataset=self.dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
+        # if self.dataset is not None:
+        runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.dataset, data_args=dataArgs, modelName=modelArgs["class_path"])))
 
         # # calculate metrics
         # runners.append(
@@ -660,6 +642,8 @@ class PredTiledEnsemble(Pipeline):
         #         ),
         #     ),
         # )
+
+        logger.debug("Finished JobGenerator setup!")
 
         return runners
     
@@ -986,119 +970,6 @@ class PredictJob(Job):
     def save(results: GATHERED_RESULTS) -> None:
         """This stage doesn't save anything."""
 
-
-class FOPredictJob(Job):
-    """Job for generating predictions with individual models in the tiled ensemble.
-
-    Args:
-        accelerator (str): Accelerator (device) to use.
-        seed (int): Random seed for reproducibility.
-        root_dir (Path): Root directory to save checkpoints, stats and images.
-        tile_index (tuple[int, int]): Index of tile that this model processes.
-        normalization_stage (str): Normalization stage flag.
-        dataloader (DataLoader): Dataloader to use for training (either val or test).
-        model (AnomalyModule): Model to train.
-        engine (AOITiledEnsembleEngine | None):
-            engine from train job. If job is used standalone, instantiate engine and model from checkpoint.
-        ckpt_path (Path | None): Path to checkpoint to be loaded if engine doesn't contain correct weights.
-
-    """
-
-    name = "Predict"
-
-    def __init__(
-        self,
-        accelerator: str,
-        seed: int,
-        root_dir: Path,
-        tile_index: tuple[int, int],
-        normalization_stage: str,
-        dataloader:DataLoader[FODataset],
-        foDataset:FODataset,
-        model: AnomalibModule | None,
-        engine: AOITiledEnsembleEngine | None,
-        ckpt_path: Path | None,
-        key: str,
-    ) -> None:
-        super().__init__()
-        if engine is None and ckpt_path is None:
-            msg = "Either engine or checkpoint must be provided to predict job."
-            raise ValueError(msg)
-
-        self.accelerator = accelerator
-        self.seed = seed
-        self.root_dir = root_dir
-        self.tile_index = tile_index
-        self.normalization_stage = normalization_stage
-        self.foDataset = foDataset
-        self.model = model
-        self.engine = engine
-        self.ckpt_path = ckpt_path
-        self.key = key
-
-    def run(
-        self,
-        task_id: int | None = None,
-    ) -> tuple[tuple[int, int], Any | None]:
-        """Predict job that predicts the data with specific model for given tile location.
-
-        Args:
-            task_id: Passed when job is ran in parallel.
-
-        Returns:
-            tuple[tuple[int, int], List[Any]]: Tile index, List of predictions.
-        """
-        devices: str | List[int] = "auto"
-        if task_id is not None:
-            devices = [task_id]
-            logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
-
-        logger.info("Start of predicting for tile at position %s,", self.tile_index)
-        seed_everything(self.seed)
-
-        if self.engine is None:
-            # in case predict is invoked separately from train job, make new engine instance
-            self.engine = get_ensemble_engine(
-                tile_index=self.tile_index,
-                accelerator=self.accelerator,
-                devices=devices,
-                root_dir=self.root_dir,
-            )
-
-        for sample in self.foDataset.iter_samples(autosave=True, progress=True):
-            predictions = self.engine.predict(model=self.model, data_path=sample.filepath, ckpt_path=self.ckpt_path)
-
-            output = predictions[0]
-
-            conf = output.pred_score.item()
-            anomaly = "anomaly" if output.pred_label else "normal"
-
-            sample[f"pred_anomaly_score_{self.key}"] = conf
-            sample[f"pred_anomaly_{self.key}"] = fo.Classification(label=anomaly)
-            sample[f"pred_anomaly_map_{self.key}"] = fo.Heatmap(map=output.anomaly_map.data.numpy().squeeze()*255, range=[0,255])
-            sample[f"pred_defect_mask_{self.key}"] = fo.Segmentation(mask=output.pred_mask.data.numpy().squeeze().astype(np.int16)*255)
-
-        # also return tile index as it's needed in collect method
-        return self.tile_index, predictions
-
-    @staticmethod
-    def collect(results: List[tuple[tuple[int, int], List[Any]]]) -> EnsemblePredictions:
-        """Collect predictions from each tile location into the predictions class.
-
-        Returns:
-            EnsemblePredictions: Object containing all predictions in form ready for merging.
-        """
-        storage = EnsemblePredictions()
-
-        for tile_index, predictions in results:
-            storage.add_tile_prediction(tile_index, predictions)
-
-        return storage
-
-    @staticmethod
-    def save(results: GATHERED_RESULTS) -> None:
-        """This stage doesn't save anything."""
-
 class PredictJobGenerator(JobGenerator):
     """Generator for predict job that uses individual models to predict for each tile location.
 
@@ -1224,6 +1095,118 @@ class PredictJobGenerator(JobGenerator):
                 engine=engine,
                 ckpt_path=ckpt_path,
             )
+
+class FOPredictJob(Job):
+    """Job for generating predictions with individual models in the tiled ensemble.
+
+    Args:
+        accelerator (str): Accelerator (device) to use.
+        seed (int): Random seed for reproducibility.
+        root_dir (Path): Root directory to save checkpoints, stats and images.
+        tile_index (tuple[int, int]): Index of tile that this model processes.
+        normalization_stage (str): Normalization stage flag.
+        dataloader (DataLoader): Dataloader to use for training (either val or test).
+        model (AnomalyModule): Model to train.
+        engine (AOITiledEnsembleEngine | None):
+            engine from train job. If job is used standalone, instantiate engine and model from checkpoint.
+        ckpt_path (Path | None): Path to checkpoint to be loaded if engine doesn't contain correct weights.
+
+    """
+
+    name = "Predict"
+
+    def __init__(
+        self,
+        accelerator: str,
+        seed: int,
+        root_dir: Path,
+        tile_index: tuple[int, int],
+        normalization_stage: str,
+        dataloader:DataLoader[FODataset],
+        foDataset:FODataset,
+        model: AnomalibModule | None,
+        engine: AOITiledEnsembleEngine | None,
+        ckpt_path: Path | None,
+        key: str,
+    ) -> None:
+        super().__init__()
+        if engine is None and ckpt_path is None:
+            msg = "Either engine or checkpoint must be provided to predict job."
+            raise ValueError(msg)
+
+        self.accelerator = accelerator
+        self.seed = seed
+        self.root_dir = root_dir
+        self.tile_index = tile_index
+        self.normalization_stage = normalization_stage
+        self.foDataset = foDataset
+        self.model = model
+        self.engine = engine
+        self.ckpt_path = ckpt_path
+        self.key = key
+
+    def run(
+        self,
+        task_id: int | None = None,
+    ) -> tuple[tuple[int, int], Any | None]:
+        """Predict job that predicts the data with specific model for given tile location.
+
+        Args:
+            task_id: Passed when job is ran in parallel.
+
+        Returns:
+            tuple[tuple[int, int], List[Any]]: Tile index, List of predictions.
+        """
+        devices: str | List[int] = "auto"
+        if task_id is not None:
+            devices = [task_id]
+            logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
+
+        logger.info("Start of predicting for tile at position %s,", self.tile_index)
+        seed_everything(self.seed)
+
+        if self.engine is None:
+            # in case predict is invoked separately from train job, make new engine instance
+            self.engine = get_ensemble_engine(
+                tile_index=self.tile_index,
+                accelerator=self.accelerator,
+                devices=devices,
+                root_dir=self.root_dir,
+            )
+
+        for sample in self.foDataset.iter_samples(autosave=True, progress=True):
+            predictions = self.engine.predict(model=self.model, data_path=sample.filepath, ckpt_path=self.ckpt_path)
+
+            output = predictions[0]
+
+            conf = output.pred_score.item()
+            anomaly = "anomaly" if output.pred_label else "normal"
+
+            sample[f"pred_anomaly_score_{self.key}"] = conf
+            sample[f"pred_anomaly_{self.key}"] = fo.Classification(label=anomaly)
+            sample[f"pred_anomaly_map_{self.key}"] = fo.Heatmap(map=output.anomaly_map.data.numpy().squeeze()*255, range=[0,255])
+            sample[f"pred_defect_mask_{self.key}"] = fo.Segmentation(mask=output.pred_mask.data.numpy().squeeze().astype(np.int16)*255)
+
+        # also return tile index as it's needed in collect method
+        return self.tile_index, predictions
+
+    @staticmethod
+    def collect(results: List[tuple[tuple[int, int], List[Any]]]) -> EnsemblePredictions:
+        """Collect predictions from each tile location into the predictions class.
+
+        Returns:
+            EnsemblePredictions: Object containing all predictions in form ready for merging.
+        """
+        storage = EnsemblePredictions()
+
+        for tile_index, predictions in results:
+            storage.add_tile_prediction(tile_index, predictions)
+
+        return storage
+
+    @staticmethod
+    def save(results: GATHERED_RESULTS) -> None:
+        """This stage doesn't save anything."""
 
 class FOPredictJobGenerator(JobGenerator):
     """Generator for predict job that uses individual models to predict for each tile location.

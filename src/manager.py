@@ -1,35 +1,28 @@
+"""
+Main class for managing the Industrial Anomaly Detection (IAD)
+"""
+# GENERAL
 import wandb
 import os
-# import sys
 import yaml
 import shutil
 import copy
-import fiftyone as fo
-import fiftyone.core.dataset as fod
-# import fiftyone.zoo as foz # zoo datasets and models
-# import cv2
 import datetime
 import logging
+import warnings
 from logging.config import dictConfig
-# import matplotlib.pyplot as plt
-# import matplotlib.patches as patches
-# import numpy as np
-# import argparse
-
-# from numpy.typing import NDArray 
-# from jsonargparse import ArgumentParser, Namespace
-# from cv2.typing import MatLike
 from enum import IntFlag, auto
-# from logging import Logger
-# from contextlib import contextmanager
-from fiftyone import ViewField as F # helper for defining views
 from pathlib import Path
-# from copy import deepcopy
-# from functools import partial
 from typing import Any, List, Tuple, Optional
 
 # FIFTYONE
 import fiftyone.core.dataset as fod
+import fiftyone as fo
+import fiftyone.zoo as foz # zoo datasets and models
+import fiftyone.brain as fob # ML methods
+from fiftyone import ViewField as F # helper for defining views
+from fiftyone import DatasetView
+
 
 # ANOMALIB
 from anomalib.deploy import ExportType
@@ -40,24 +33,24 @@ from anomalib.callbacks import ModelCheckpoint, TimerCallback
 from anomalib.engine import Engine
 from anomalib.data.utils import Split
 from anomalib.data import PredictDataset
-# from lightning.pytorch.core import LightningModule
+from anomalib.visualization import ImageVisualizer
+
 
 # PYTROCH LIGHTNING
 from lightning.pytorch import Callback
 from lightning.pytorch.callbacks import TQDMProgressBar
 
 # OWN FILES
-from AnomalyDataset import importDataset, exportDataset, FODataModule, FODataset, importPredictDataset
-from setup import mapNameToModule, create_model
-from visualisation import clipEmbedding
-from settings import MODELS, ENGINE_PARAMS, DATAMODULE_PARAMS
-from Training import run_inference
-# from cameraProcessor import CameraProcessor
-from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
-from utils import find_first_file, exclude_from_logger, loadModelConfig
-from anomalib.visualization import ImageVisualizer
+from src.data.anomaly_datasets import importDataset, exportDataset, FODataModule, FODataset, importPredictDataset
+from src.setup import mapNameToModule, create_model
+from src.settings import MODELS, ENGINE_PARAMS, DATAMODULE_PARAMS
+from src.tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
+from src.utils import find_first_file, exclude_from_logger, loadModelConfig
 
 os.environ["TRUST_REMOTE_CODE"] = "1"
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="timm.models.layers")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="openvino.runtime")
 
 class modelFlags(IntFlag):
     default = auto()
@@ -69,11 +62,25 @@ class modelFlags(IntFlag):
 # Create the general logger
 logger = logging.getLogger(__name__)
 
-class IAD():
+class AnomalyDetectionManager():
     """Class managing the training and validation of the Industrial Anomaly Detection
     """
 
     def __init__(self, logFileName:str="general.log", outputPath:Path=Path("results"), configDir:Path=Path("configs"), datasetDir:Path=Path("datasets")) -> None:
+        """
+        Create the managing IAD class. Holds reference to Datasets, Models, Predictions, Settings, Paths
+
+        Parameters
+        ----------
+        logFileName : str (optional)
+            _description_. Default is `"general.log"`
+        outputPath : Path (optional)
+            Where should results like model weights or predictions be stored. Default is `Path("results")`
+        configDir : Path (optional)
+            Where do configurations for this session lay. Default is `Path("configs")`
+        datasetDir : Path (optional)
+            _description_. Default is `Path("datasets")`
+        """
         self.state:modelFlags = modelFlags.default
         
         self.FO_Dataset:fo.Dataset|None = None
@@ -96,7 +103,6 @@ class IAD():
         self.model:AnomalibModule|None = None
         self.modelTrained:bool = False
         self.modelCopyPath:Path|None = None
-
 
         self.engine:Engine|None = None
         self.now = datetime.datetime.now().strftime("%Y%m%d-%H%M")
@@ -309,6 +315,7 @@ class IAD():
         """
         if split == ("pred",):
             self.FO_Dataset, self.AL_PredictDataset = importPredictDataset(datasetPath, name=datasetName, overwrite=overwrite)
+            self.datasetName = datasetName
         else:
             if overwrite and merge:
                 logger.info("Overwrite and merge should not both be true. Overwrite is ignored...")
@@ -318,7 +325,8 @@ class IAD():
             elif fo.dataset_exists(datasetName) and not overwrite and not merge:
                 logger.info(f"Dataset '{datasetName}' already exists in database")
                 logger.info("Loading from database")
-                self.FO_Dataset = self.loadDatasetFromDatabase(datasetName)            
+                self.FO_Dataset = self.loadDatasetFromDatabase(datasetName)    
+                self.datasetName = datasetName        
             elif fo.dataset_exists(datasetName) and overwrite:
                 logger.info(f"Dataset '{datasetName}' already exists in database")
                 logger.info("Overwriting")
@@ -467,7 +475,7 @@ class IAD():
         """
         if category == "all":
             self.category = None
-            logger.info("Selecting all as category selects all categories")
+            logger.info("Selecting 'all' as category selects all categories")
             logger.info(f"There are {self.FO_Dataset.count()} images in the {self.datasetName} dataset")
             self.FO_DatasetView = self.FO_Dataset.exists("file_path")
 
@@ -477,10 +485,10 @@ class IAD():
             elif category not in self.categories:
                 AttributeError(f"Category {category} not found! Available categories are: {self.categories}")
             else:
-                logger.info(f"Category found in categories for this dataset:")
+                logger.info(f"Category {self.category} found in categories for this dataset:")
                 self.category = category
             self.FO_DatasetView = self.FO_Dataset.filter_labels("category", F("label").is_in([category]))
-            logger.info(f"There are {len(self.FO_DatasetView)} images in the selected category {category} of the {self.datasetName} dataset")
+            logger.info(f"There are {len(self.FO_DatasetView)} images in the selected category '{category}' of the '{self.datasetName}' dataset")
         return self.FO_DatasetView
 
     #####
@@ -666,7 +674,8 @@ class IAD():
 
         logger.info("Running inference on dataset...")
         with exclude_from_logger():
-            run_inference(self.FO_Dataset, self.engine, model, self.modelName)
+            if model and self.modelName is not None:
+                run_inference(self.FO_Dataset, self.engine, model, self.modelName)
 
         self.currentSession = fo.launch_app(dataset)
 
@@ -686,12 +695,13 @@ class IAD():
         FO_Dataset:fo.Dataset 
         _, FO_Dataset = self._checkBeforeTraining()
 
-        try:
-            FO_Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
-        except ValueError as e:
-            logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
-            fo.delete_dataset(f"{self.datasetName}-{self.category}")
-            FO_Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+        if self.FO_DatasetView is not None: # Category is set which generates a datasetview
+            try:
+                FO_Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+            except ValueError as e:
+                logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
+                fo.delete_dataset(f"{self.datasetName}-{self.category}")
+                FO_Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
 
 
         # Setup datamodule for the tiling 
@@ -719,10 +729,11 @@ class IAD():
         trainPipeline.run(self.tilingConfigDict, "")
         # trainPipeline.run(args)
         self.trainPipeline = trainPipeline
-        return self.trainPipeline
+        self.FO_Dataset = FO_Dataset
+        # return self.trainPipeline
     
-    def predict(self, config:Path, tiling:bool=False, ckptPath:Path|None=None):
-        """predictuate the current model on the dataset
+    def predict(self, config:Path, tiling:bool, trainingDir:Path, ckptPath:Path|None=None):
+        """predict with the current model on the dataset
 
         Arguments: 
             config -- path to the config
@@ -730,7 +741,13 @@ class IAD():
         Keyword Arguments:
             tiling -- _description_ (default: {False})
         """
-
+        if ckptPath is None:
+            if self.ckptPath is not None:
+                ckptPath = self.ckptPath.parent.resolve()
+            else:
+                logger.error("Neither ckptPath given nor self.ckptPath available.")
+                return
+        
         if not config.suffix == ".yaml":
             FileNotFoundError("Config file needs to have .yaml suffix")
         if not config.exists():
@@ -745,14 +762,12 @@ class IAD():
         else:
             self.runName =f"{self.modelName}-{self.datasetName}"
 
-        ckptPath = self.ckptPath.parent.resolve()
-
         self.adjustOutputPath()
         self.setupLogging()
         self.setupTrainingCallbacks()
         self.setupWandBLogger(self.runName, self.outputPath, self.version)
         if tiling:
-            self._predictTiledModel(self.trainingConfig, ckptPath=ckptPath)
+            self._predictTiledModel(self.trainingConfig, ckptPath=ckptPath, trainingDir=trainingDir)
         else:
             self._evalSingleModel(self.trainingConfig)
         
@@ -843,13 +858,13 @@ class IAD():
         # logger.info("Running inference on dataset...")
         with exclude_from_logger():
             if self.model is not None and self.modelName is not None:
-                run_inference(self.dataset, self.engine, self.model, self.modelName)
+                run_inference(self.FO_Dataset, self.engine, self.model, self.modelName)
             else:
                 AttributeError("Need self.model and self.modelName")
+        if self.FO_Dataset is not None:
+            self.currentSession = fo.launch_app(self.FO_Dataset)
 
-        self.currentSession = fo.launch_app(self.dataset)
-
-    def _predictTiledModel(self, config:dict[str, Any], ckptPath:Path|None):
+    def _predictTiledModel(self, config:dict[str, Any], ckptPath:Path|None, trainingDir:Path):
         """Evaluate a tiled model on the dataset
 
         Arguments:
@@ -858,10 +873,20 @@ class IAD():
         _:AnomalibModule
         FO_Dataset:fo.Dataset 
         _, FO_Dataset = self._checkBeforeTraining()
+
+        if self.FO_DatasetView is not None: # Category is set which generates a datasetview
+            try:
+                FO_Dataset:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+            except ValueError as e:
+                logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
+                fo.delete_dataset(f"{self.datasetName}-{self.category}")
+                FO_Dataset:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+        logger.debug(f"FO_Dataset: \n {FO_Dataset}")
+
         # Setup datamodule for the tiling 
         self.datamoduleParams = {key: config[key] for key in DATAMODULE_PARAMS if key in config}
         self.datamodule:FODataModule = self._setupDatamodule(FO_Dataset, self.datamoduleParams)
-
+        
         self.adjustOutputPath()
 
         logger.info("Running tiled ensemble pred pipeline.")
@@ -872,6 +897,7 @@ class IAD():
             ValueError(f"self.tilingConfigPath is not set")
         assert self.AL_PredictDataset is not None
         test_pipeline = PredTiledEnsemble(self.tilingConfigDict["rootDir"],
+                                          trainingDir=trainingDir,
                                           dataset=FO_Dataset,
                                           predictDataset=self.AL_PredictDataset,
                                           datamodule=self.datamodule)
@@ -883,6 +909,7 @@ class IAD():
         self.tilingConfigDict["ckptPath"] = ckptPath
         logger.info(f"ckptPath: {ckptPath}")
         test_pipeline.run(self.tilingConfigDict, "")
+        self.FO_Dataset = FO_Dataset
 
     # def parseTilingConfig(self, path:Path):
     #     with Path(path).open(encoding="utf-8") as file:
@@ -941,11 +968,59 @@ class IAD():
     #####
 
     def launchSession(self):
+        # TODO make View accepted; If we limit dataset to one category we get a view
+        # launch app does not work with view
+        # so we need a second dataset only with the class selected
+        # call them dataset and subdataset
         if self.FO_Dataset is not None:
             self.session = fo.launch_app(self.FO_Dataset)
+            logger.info("DatasetView (category selection) currently not supported. Shown dataset is the entire dataset.")
             logger.info(f"Session addess and port: {self.session.server_address}:{self.session.server_port}")
         else:
             logger.info("Load a dataset first!")
+
+def clipEmbedding(dataset:fod.Dataset):
+    model = foz.load_zoo_model(
+        "clip-vit-base32-torch"
+    )  # load the CLIP model from the zoo
+
+    # Compute embeddings for the dataset
+    dataset.compute_embeddings(
+        model=model, embeddings_field="clip_embeddings", batch_size=64
+    )
+
+    # Dimensionality reduction using UMAP on the embeddings
+    fob.compute_visualization(
+        dataset, embeddings="clip_embeddings", method="umap", brain_key="clip_vis"
+    )
+
+def resnetEmbedding(dataset:fod.Dataset):
+    model = foz.load_zoo_model(
+        "resnet50-imagenet-torch"
+    )  # load the ResNet50 model from the zoo
+
+    # Compute embeddings for the dataset — this might take a while on a CPU
+    dataset.compute_embeddings(model=model, embeddings_field="resnet50_embeddings")
+
+    # Dimensionality reduction using UMAP on the embeddings
+    fob.compute_visualization(
+        dataset,
+        embeddings="resnet50_embeddings",
+        method="umap",
+        brain_key="resnet50_vis",
+    )
+
+def run_inference(sample_collection, engine: Engine, model:AnomalibModule, key:str):
+    for sample in sample_collection.iter_samples(autosave=True, progress=True):
+        output = engine.predict(data_path=sample.filepath, model=model)[0]
+        
+        conf = output.pred_score.item()
+        anomaly = "anomaly" if output.pred_label else "normal"
+
+        sample[f"pred_anomaly_score_{key}"] = conf
+        sample[f"pred_anomaly_{key}"] = fo.Classification(label=anomaly)
+        sample[f"pred_anomaly_map_{key}"] = fo.Heatmap(map=output.anomaly_map.data.numpy().squeeze()*255, range=[0,255])
+        sample[f"pred_defect_mask_{key}"] = fo.Segmentation(mask=output.pred_mask.data.numpy().squeeze().astype(np.int16)*255)
 
 if __name__ == "__main__":
     # Point FiftyOne at your MongoDB instance
@@ -972,38 +1047,38 @@ if __name__ == "__main__":
     configDir   = Path("configs/")
     outputPath  = Path("results/")
     # ckptPath    = Path("../results/MVTecADShort/cable/padim/tiled/checkpoints")
-    iad = IAD()
+    manager = AnomalyDetectionManager()
 
-    iad.generateModel(f"{modelName}.yaml")
+    manager.generateModel(f"{modelName}.yaml")
     datasetPath = Path(os.path.join("datasets", datasetName))
-    iad.loadDatasetFromDisk(datasetPath, datasetName, overwrite=True, merge=False)
-    iad.selectCategory(category)
-    iad.adjustOutputPath()
-    if iad.FO_Dataset is None:
+    manager.loadDatasetFromDisk(datasetPath, datasetName, overwrite=True, merge=False)
+    manager.selectCategory(category)
+    manager.adjustOutputPath()
+    if manager.FO_Dataset is None:
         exit(1)
     if tiling:
-        iad.setupTiling(configDir / Path("Tiling/TiledEnsemble.yaml"))
+        manager.setupTiling(configDir / Path("Tiling/TiledEnsemble.yaml"))
     if train:
-        iad.train(configDir / Path(f"Trainer/Training_{modelName}.yaml"), tiling=tiling)
-    # iad.launchSession()
+        manager.train(configDir / Path(f"Trainer/Training_{modelName}.yaml"), tiling=tiling)
+    # manager.launchSession()
     if evaluate:
-        if iad.ckptPath is not None:
+        if manager.ckptPath is not None:
             if not tiling:
-                iad.loadCheckpoint(iad.ckptPath, f"{modelName}")
-            iad.eval(configDir / "Trainer" / "Eval.yaml", tiling=tiling)
-        iad.launchSession()
+                manager.loadCheckpoint(manager.ckptPath, f"{modelName}")
+            manager.eval(configDir / "Trainer" / "Eval.yaml", tiling=tiling)
+        manager.launchSession()
 
-    ckptPath = iad.ckptPath.parent.resolve()
+    ckptPath = manager.ckptPath.parent.resolve()
     print(ckptPath)
-    iad.loadDatasetFromDisk(datasetPath=datasetDir / "MVTecADShortPred", datasetName="cablePred35", split=("pred",), overwrite=True)
-    if iad.ckptPath is not None:
+    manager.loadDatasetFromDisk(datasetPath=datasetDir / "MVTecADShortPred", datasetName="cablePred35", split=("pred",), overwrite=True)
+    if manager.ckptPath is not None:
         if not tiling:
-            iad.loadCheckpoint(iad.ckptPath, f"{modelName}")
+            manager.loadCheckpoint(manager.ckptPath, f"{modelName}")
         if tiling:
-            iad.setupTiling(configDir / "Tiling" / "TiledEnsemblePred.yaml")
-        iad.predict(config=configDir / "Trainer" / "Predict.yaml", tiling=tiling, ckptPath=ckptPath)
-        print(iad.FO_Dataset)
-        iad.launchSession()
+            manager.setupTiling(configDir / "Tiling" / "TiledEnsemblePred.yaml")
+        manager.predict(config=configDir / "Trainer" / "Predict.yaml", tiling=tiling, ckptPath=ckptPath)
+        print(manager.FO_Dataset)
+        manager.launchSession()
 
 
     shutdown = False
