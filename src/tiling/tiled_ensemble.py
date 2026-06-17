@@ -47,10 +47,10 @@ from anomalib.pipelines.tiled_ensemble.components import (
 from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT
 
 # OWN FILES
-from src.data.anomaly_datasets import importDataset, FODataModule, FODataset, AnomalibDataset
-from src.tiling.ensemble_engine import AOITiledEnsembleEngine
-from src.tiling.ensemble_tiling import EnsembleTiler, TileCollater
-from src.tiling.jobs import (
+from data.anomaly_datasets import importDataset, FODataModule, FODataset, AnomalibDataset
+from tiling.ensemble_engine import AOITiledEnsembleEngine
+from tiling.ensemble_tiling import EnsembleTiler, TileCollater
+from tiling.jobs import (
     AOIStatisticsJobGenerator,
     AOIMergeJobGenerator,
     AOINormalizationJobGenerator,
@@ -476,9 +476,18 @@ class PredTiledEnsemble(Pipeline):
         root_dir (Path): Path to root dir of run that contains checkpoints.
     """
 
-    def __init__(self, root_dir: Path, trainingDir:Path, predictDataset:PredictDataset, dataset:fo.Dataset, datamodule:FODataModule|None=None, datamoduleArgs:dict[str,Any]|None=None, gtAvail:bool=False) -> None:
+    def __init__(self,
+                 root_dir: Path,
+                 trainingDir:Path,
+                 ckptDir:Path,
+                 predictDataset:PredictDataset,
+                 dataset:fo.Dataset,
+                 datamodule:FODataModule|None=None,
+                 datamoduleArgs:dict[str,Any]|None=None,
+                 gtAvail:bool=False) -> None:
         self.root_dir = Path(root_dir)                                          # Where this pipeline stores results from
-        self.trainingDir = Path(trainingDir)                                    # Where the training pipeline stored results like threshold and normalization stats
+        self.trainingDir = Path(trainingDir)   
+        self.ckptDir = ckptDir                                 # Where the training pipeline stored results like threshold and normalization stats
         logger.info(f"Root directory for Eval Pipeline: {root_dir}")
         self.dataset:fo.Dataset = dataset
         self.predictDataset = predictDataset
