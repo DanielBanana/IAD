@@ -1,0 +1,31 @@
+# This is a product file that contains every information to inference a anomaly detection model for a irlbacher product
+# like the MDF6
+# Usually this is the result of a training run, after which a model can be used to detect anomalies
+# This file mainly contains references to other setting files that are queried by the program that uses this file.
+
+product: "cable"
+
+logging:
+  logFileName: "general.log"
+
+model:
+  name: "Patchcore"
+  config: patchcore.yaml
+  weights_path: "results/MVTecADShort/cable/patchcore/tiled/checkpoints"
+
+tiling:
+  enable: True
+  config: "TiledEnsemble.yaml"
+
+trainer:
+  config: "Training_patchcore.yaml"
+
+inferencer:
+  config: "Prediction.yaml"
+
+dataset:
+  name: "MVTecADShort"
+  category: "cable"
+  split:
+    - "train"
+    - "test"

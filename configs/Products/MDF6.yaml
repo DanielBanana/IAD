@@ -1,0 +1,28 @@
+# This is a product file that contains every information to inference a anomaly detection model for a irlbacher product
+# like the MDF6
+# Usually this is the result of a training run, after which a model can be used to detect anomalies
+# This file mainly contains references to other setting files that are queried by the program that uses this file.
+
+product: "MDF6"
+
+logging:
+  logFileName: "general.log"
+
+model:
+  name: "Patchcore"
+  config: pathcore.yaml
+  weights_path: "results/Irlbacher/MDF6/pathcore/tiled/checkpoints"
+
+tiling:
+  enable: True
+  config: "IrlbacherTiledEnsemble.yaml"
+
+trainer:
+  config: "Training_patchcore.yaml"
+
+dataset:
+  name: "Irlbacher"
+  category: "MDF6"
+  split:
+    - "train"
+    - "test"
