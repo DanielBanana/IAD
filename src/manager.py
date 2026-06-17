@@ -41,11 +41,11 @@ from lightning.pytorch import Callback
 from lightning.pytorch.callbacks import TQDMProgressBar
 
 # OWN FILES
-from src.data.anomaly_datasets import importDataset, exportDataset, FODataModule, FODataset, importPredictDataset
-from src.setup import mapNameToModule, create_model
-from src.settings import MODELS, ENGINE_PARAMS, DATAMODULE_PARAMS
-from src.tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
-from src.utils import find_first_file, exclude_from_logger, loadModelConfig
+from data.anomaly_datasets import importDataset, exportDataset, FODataModule, FODataset, importPredictDataset
+from setup import mapNameToModule, create_model
+from settings import MODELS, ENGINE_PARAMS, DATAMODULE_PARAMS
+from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
+from utils import find_first_file, exclude_from_logger, loadModelConfig
 
 os.environ["TRUST_REMOTE_CODE"] = "1"
 
@@ -105,6 +105,9 @@ class AnomalyDetectionManager():
         self.modelCopyPath:Path|None = None
 
         self.engine:Engine|None = None
+        self.trainerPath: Path|None = None
+        self.inferencerPath: Path|None = None
+
         self.now = datetime.datetime.now().strftime("%Y%m%d-%H%M")
 
         # general out folder like "results"; probably does not change often
@@ -138,7 +141,6 @@ class AnomalyDetectionManager():
 
         self.shutdown:bool = False        
         self.setupLogging()
-
 
     def setupLogging(self):
         """Read the logging.yaml config file from disk and setup the logger accordingly
@@ -436,9 +438,9 @@ class AnomalyDetectionManager():
         if not tilingPath.exists():
             tilingPath.mkdir(parents=True)
 
-        if self.trainingPath:
-            _, fileName = os.path.split(self.trainingPath)
-            shutil.copy2(self.trainingPath, trainerPath / fileName)
+        if self.trainerPath:
+            _, fileName = os.path.split(self.trainerPath)
+            shutil.copy2(self.trainerPath, trainerPath / fileName)
 
         # Copy the modelConfig file if possible
         if self.modelConfigPath is not None:
@@ -490,21 +492,31 @@ class AnomalyDetectionManager():
             self.FO_DatasetView = self.FO_Dataset.filter_labels("category", F("label").is_in([category]))
             logger.info(f"There are {len(self.FO_DatasetView)} images in the selected category '{category}' of the '{self.datasetName}' dataset")
         return self.FO_DatasetView
+    
+    @classmethod
+    def loadProduct(cls, productConfig: Path, outputPath: Path, configDir: Path, datasetDir: Path) -> "AnomalyDetectionManager":
+        with productConfig.open("r", encoding="utf-8") as f:
+            config:dict[Any, Any] = yaml.safe_load(f)
+        
+        manager = cls(config["logging"]["logFileName"],
+                                      outputPath=outputPath, 
+                                      configDir=configDir,
+                                      datasetDir=datasetDir)
+        
+        manager.generateModel(f"{config["model"]["config"]}", configDir)
+        datasetName:str = config["dataset"]["name"]
+        datasetPath = datasetDir/datasetName
+        manager.loadDatasetFromDisk(datasetPath, datasetName, overwrite=True, merge=False, split=tuple(config["dataset"]["split"]))
+        manager.selectCategory(config["dataset"]["category"])
+        if manager.FO_Dataset is None:
+            raise RuntimeError("Dataset failed to load — check your dataset path and name.")
+        if config["tiling"]["enable"]:
+            manager.setupTiling(configDir / "Tiling" / config["tiling"]["config"])
+        manager.adjustOutputPath()
+        manager.trainerPath = configDir / "Trainer" / Path(config["trainer"]["config"])
+        manager.inferencerPath = configDir / "Trainer" / Path(config["inferencer"]["config"])
 
-    #####
-    # Logging
-    #####
-
-    # def setupRunLogging(self, runName:str, runDir:Path, logFileName:str="run.log") -> Logger:
-    #     pass
-    #     logger = logging.getLogger(f"general.{runName}")
-    #     logger.setLevel(logging.INFO)
-    #     fileHandler = logging.FileHandler(os.path.join(runDir, logFileName))
-    #     fileHandler.setLevel(logging.INFO)
-    #     logFormater = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    #     fileHandler.setFormatter(logFormater)
-    #     logger.addHandler(fileHandler)
-    #     return logger
+        return manager
 
     def setupTrainingCallbacks(self):
         """Setup the standard callbacks for running a model
@@ -639,7 +651,7 @@ class AnomalyDetectionManager():
                 raise ValueError(f"tilingConfigPath is not set")
 
         with open(trainingConfigPath, 'r') as f:
-            self.trainingPath = trainingConfigPath
+            self.trainerPath = trainingConfigPath
             self.trainingConfig = yaml.safe_load(f) 
 
         if self.category is not None:
@@ -732,7 +744,7 @@ class AnomalyDetectionManager():
         self.FO_Dataset = FO_Dataset
         # return self.trainPipeline
     
-    def predict(self, config:Path, tiling:bool, trainingDir:Path, ckptPath:Path|None=None):
+    def predict(self, config:Path, tiling:bool, resultsDir:Path, ckptPath:Path|None=None):
         """predict with the current model on the dataset
 
         Arguments: 
@@ -767,12 +779,12 @@ class AnomalyDetectionManager():
         self.setupTrainingCallbacks()
         self.setupWandBLogger(self.runName, self.outputPath, self.version)
         if tiling:
-            self._predictTiledModel(self.trainingConfig, ckptPath=ckptPath, trainingDir=trainingDir)
+            self._predictTiledModel(self.trainingConfig, ckptPath=ckptPath, resultsDir=resultsDir)
         else:
             self._evalSingleModel(self.trainingConfig)
         
     def eval(self, evalConfig:Path, tiling:bool=False, ckptDir:Path|None=None):
-        """predictuate the current model on the dataset
+        """evaluate the current model on the current dataset
 
         Arguments: 
             config -- path to the config
@@ -803,6 +815,8 @@ class AnomalyDetectionManager():
             self._evalTiledModel(self.evalConfig, ckptDir=ckptDir)
         else:
             self._evalSingleModel(self.evalConfig)
+
+    
 
     def _evalTiledModel(self, evalConfig:dict[str, Any], ckptDir:Path|None=None):
         """Evaluate a tiled model on the dataset
@@ -864,7 +878,7 @@ class AnomalyDetectionManager():
         if self.FO_Dataset is not None:
             self.currentSession = fo.launch_app(self.FO_Dataset)
 
-    def _predictTiledModel(self, config:dict[str, Any], ckptPath:Path|None, trainingDir:Path):
+    def _predictTiledModel(self, config:dict[str, Any], ckptPath:Path|None, resultsDir:Path):
         """Evaluate a tiled model on the dataset
 
         Arguments:
@@ -896,11 +910,12 @@ class AnomalyDetectionManager():
         else:
             ValueError(f"self.tilingConfigPath is not set")
         assert self.AL_PredictDataset is not None
-        test_pipeline = PredTiledEnsemble(self.tilingConfigDict["rootDir"],
-                                          trainingDir=trainingDir,
+        pred_pipeline = PredTiledEnsemble(self.tilingConfigDict["rootDir"],
+                                          trainingDir=resultsDir,
                                           dataset=FO_Dataset,
                                           predictDataset=self.AL_PredictDataset,
-                                          datamodule=self.datamodule)
+                                          datamodule=self.datamodule,
+                                          ckptDir=self.ckptDir)
         if self.model:
             modelConfig = copy.deepcopy(self.modelConfig)
             modelConfig["Evaluator"] = None
@@ -908,7 +923,7 @@ class AnomalyDetectionManager():
         
         self.tilingConfigDict["ckptPath"] = ckptPath
         logger.info(f"ckptPath: {ckptPath}")
-        test_pipeline.run(self.tilingConfigDict, "")
+        pred_pipeline.run(self.tilingConfigDict, "")
         self.FO_Dataset = FO_Dataset
 
     # def parseTilingConfig(self, path:Path):

@@ -10,7 +10,7 @@ from torchvision.transforms.v2 import Resize
 from anomalib import TaskType
 from anomalib.models import Padim, Patchcore, Stfpm
 
-from setup import define_metrics
+from src.IAD.src.setup import define_metrics
 from training import train_and_export_model, run_inference
 from AnomalyDataset import importTrainTestDataset
 

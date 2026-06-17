@@ -22,9 +22,9 @@ from anomalib.visualization import ImageVisualizer
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 
 # OWN FILES
-from src.setup import define_metrics
-from src.settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-from src.tiling.post_processor import AOIPostProcessor
+from setup import define_metrics
+from settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from tiling.post_processor import AOIPostProcessor
 
 
 class VisualizerType(Enum):

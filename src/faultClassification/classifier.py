@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from typing import Optional, List, Tuple, Dict
 import fiftyone as fo
-from database import ManufacturingFaultDatabase
+from faultClassification.database import ManufacturingFaultDatabase
 
 
 class FaultDataset(Dataset):

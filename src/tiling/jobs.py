@@ -49,7 +49,7 @@ from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import E
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
 
-from src.data.anomaly_datasets import FODataModule, FODataset
+from data.anomaly_datasets import FODataModule, FODataset
 
 logger = logging.getLogger(__name__)
 
