@@ -8,17 +8,19 @@ import sys
 import logging
 import datetime
 from pathlib import Path
-from typing import Literal, Tuple, Dict, List, Any
+from typing import Literal, Tuple, Dict, List, Any, Optional, Type
 
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder
-from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm
+from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm, InpFormer, AnomalyVFM, Glass
+from anomalib.models.components import AnomalibModule
 from anomalib.callbacks import ModelCheckpoint, GraphLogger, TimerCallback
 from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
 
 from lightning.pytorch.callbacks import TQDMProgressBar
 
-from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+# OWN FILES
+from .settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 
 def define_metrics() -> Tuple[List[Any], List[Any]]:
     # val metrics (needed for early stopping)
@@ -119,7 +121,7 @@ def create_datamodule(dataset, category, train_batch_size, eval_batch_size, num_
         
     return datamodule
 
-def mapNameToModule(modelName:str):
+def mapNameToModule(modelName: str) -> Optional[Type[AnomalibModule]]:
     if modelName.lower() == "efficientad-s":
         # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
         model = EfficientAd
@@ -143,12 +145,14 @@ def mapNameToModule(modelName:str):
         model = Patchcore
     elif modelName.lower() == "padim":
         model = Padim
+    elif modelName.lower() == "inp_former":
+        model = InpFormer
     else:
         KeyError(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
         model=None
     return model
 
-def create_model(modelName, modelConfig):
+def create_model(modelName:str, modelConfig:dict[str,Any]) -> Optional[AnomalibModule]:
     if modelName == "EfficientAd":
         # model = EfficientAd(visualizer=visualizer, model_size="small", post_processor=postProcessor)
         model = EfficientAd(**modelConfig)
@@ -176,6 +180,8 @@ def create_model(modelName, modelConfig):
         model = Padim(**modelConfig)
     elif modelName == "Padim":
         model = Padim(**modelConfig)
+    elif modelName == "inp_former":
+        model = InpFormer(**modelConfig)
     else:
         print(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
         model = None

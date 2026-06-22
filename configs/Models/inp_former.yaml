@@ -1,0 +1,17 @@
+# Model configuration
+# https://anomalib.readthedocs.io/en/latest/markdown/guides/reference/models/image/fastflow.html
+# Non-primitive types: reference other YAML files
+model:
+  class_path: "inp_former"
+  init_args:
+    encoder_name: "dinov2reg_vit_base_14" # Name of the pre-trained Vision Transformer backbone to use as the encoder (e.g., a DINOv2 variant): 
+        # backbones: dinov2, dinov2reg; enc"small", "base", "large"
+    target_layers: [2, 3, 4, 5, 6, 7, 8, 9]
+    fuse_layer_encoder: [[0, 1, 2, 3], [4, 5, 6, 7]]
+    fuse_layer_decoder: [[0, 1, 2, 3], [4, 5, 6, 7]]
+    remove_class_token: False # If ``True``, the class token is dropped from the patch token sequence before INP extraction and reconstruction. Defaults to ``False``.
+#     encoder_require_grad_layer: [] #Indices of encoder layers that should remain trainable; all other encoder layers are frozen. Defaults to ``[]`` (fully frozen encoder).
+    inp_num: 6 # Number of Intrinsic Normal Prototypes to extract per image. Defaults to ``6``.
+    pre_processor: "PreProcessor.yaml"  # or set to false to disable
+    post_processor: "PostProcessor.yaml"  # or set to false to disable
+    evaluator: "Evaluator.yaml"  # or set to false to disable

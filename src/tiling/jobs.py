@@ -49,7 +49,8 @@ from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import E
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
 
-from data.anomaly_datasets import FODataModule, FODataset
+# OWN FILES
+from src.data.anomaly_datasets import FODataModule, FODataset
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +670,22 @@ class AOIVisualizationJob(Job):
 
     name = "Visualize"
 
+
+    # def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, dataArgs: dict[str,Any], modelName:str) -> None:
+    #     super().__init__()
+
+            
+        # self.FO_Dataset:fo.Dataset = FO_Dataset
+        # self.dataArgs:dict[str,Any] = dataArgs
+        # self.modelName:str = modelName
+        # self.dataset_name = dataArgs["init_args"].get("name", None)
+        # if self.dataset_name is None:
+        #     # if not specified, take class name
+        #     self.dataset_name = dataArgs["class_path"].split(".")[-1]
+        # self.category:str = dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
+        # logger.debug(f"{self.name}: Dataset name: {self.dataset_name}")
+        # logger.debug(f"{self.name}: Selected Category: {self.category}")
+
     def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, data_args: dict[str,Any], visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
         super().__init__()
         # self.predictions = prev_stage_result
@@ -677,7 +694,7 @@ class AOIVisualizationJob(Job):
             self.rest = prev_stage_result[1:]
         else:
             self.predictions = prev_stage_result
-        self.predMaskImage = pred_mask_image # If this is the prediction mask is saved as a standalone image
+        self.predMaskImage = pred_mask_image # If this is true the prediction mask is saved as a standalone image
         self.root_dir = root_dir / "images"
 
         self.fields = visualisation_args.get("fields", None)
@@ -688,7 +705,7 @@ class AOIVisualizationJob(Job):
             self.overlay_fields = [("image", ["pred_mask"]), ("image", ["anomaly_map"])]
         self.field_size = visualisation_args.get("field_size", None)
         if self.field_size is None:
-            self.field_size = (256,256)
+            self.field_size = [256,256]
             logger.warning(f"Field size was not given for VisualisationJob. The Visualisation is probaly not right; size of (256,256) is assumed")
 
         self.fields_config = visualisation_args.get("fields_config", None)
@@ -721,51 +738,71 @@ class AOIVisualizationJob(Job):
         del task_id  # not needed here
 
         logger.info("Starting visualization.")
-        logger.debug(f"{self.name}: image: {self.predictions[0].image[0]}")
-        logger.debug(f"{self.name}: anomaly_map: {self.predictions[0].anomaly_map[0]}")
-        logger.debug(f"{self.name}: pred_Mask: {self.predictions[0].pred_mask[0]}")
-        logger.debug(f"{self.name}: gt_mask: {self.predictions[0].gt_mask[0]}")
+        # logger.debug(f"{self.name}: image: {self.predictions[0].image[0]}")
+        # logger.debug(f"{self.name}: anomaly_map: {self.predictions[0].anomaly_map[0]}")
+        # logger.debug(f"{self.name}: pred_Mask: {self.predictions[0].pred_mask[0]}")
+        # logger.debug(f"{self.name}: gt_mask: {self.predictions[0].gt_mask[0]}")
 
-        for item in tqdm(self.predictions, desc="Visualizing"):
-            logger.debug(f"{self.name}: item: {item}")
-            # for item in batch:
-            image = visualize_image_item(
-                item,
-                fields=self.fields,
-                overlay_fields=self.overlay_fields,
-                field_size=self.field_size,
-                fields_config=self.fields_config,
-                overlay_fields_config=self.overlay_fields_config,
-                text_config=self.text_config,
-            )
 
-            # Get the dataset name and category to save the image
-            filename = generate_output_filename(
-                input_path=item.image_path or "",
-                output_path=self.root_dir,
-                dataset_name=self.dataset_name,
-                category=self.category,
-            )
-            logger.debug(f"{self.name}: filename: {filename}")
+        # for batch in tqdm(self.predictions, desc="51 Visualisation"):
+        #     for data in batch:
+        #         path = data.image_path
+        #         sample:fo.Sample = self.FO_Dataset[path]
+        #         conf = data.pred_score.item()
+        #         anomaly = "anomaly" if data.pred_label.item() else "normal"
 
-            if image is not None:
-                # Save the image to the specified filename
-                image.save(filename)
+        #         sample[f"pred_anomaly_score_{self.modelName}"] = conf
+        #         sample[f"pred_anomaly_{self.modelName}"] = fo.Classification(label=anomaly)
+        #         heatmap = data.anomaly_map.to("cpu")
+        #         sample[f"pred_anomaly_map_{self.modelName}"] = fo.Heatmap(map=heatmap.data.numpy().squeeze()*255, range=[0,255])
+        #         try:
+        #             mask = data.pred_mask.to("cpu")
+        #             sample[f"pred_defect_mask_{self.modelName}"] = fo.Segmentation(mask=mask.data.numpy().squeeze().astype(np.uint8)*255)
+        #         except:
+        #             logger.error("Segmentation prediction mask not available.")
+        #         sample.save()
 
-            if self.predMaskImage:
-                predMask = visualize_image_item(
-                    item,
-                    fields=["pred_mask"],
-                    overlay_fields=None,
+        for batch in tqdm(self.predictions, desc="51 Visualisation"):
+            for data in batch:
+                logger.debug(f"{self.name}: item: {data}")
+                # for item in batch:
+                image = visualize_image_item(
+                    data,
+                    fields=self.fields,
+                    overlay_fields=self.overlay_fields,
                     field_size=self.field_size,
                     fields_config=self.fields_config,
                     overlay_fields_config=self.overlay_fields_config,
-                    text_config={"enable": False},
+                    text_config=self.text_config,
                 )
-                if predMask is not None:
+
+                # Get the dataset name and category to save the image
+                filename = generate_output_filename(
+                    input_path=data.image_path or "",
+                    output_path=self.root_dir,
+                    dataset_name=self.dataset_name,
+                    category=self.category,
+                )
+                logger.debug(f"{self.name}: filename: {filename}")
+
+                if image is not None:
                     # Save the image to the specified filename
-                    newStem = f"{filename.stem}_predMask"
-                    predMask.save(filename.with_stem(newStem))
+                    image.save(filename)
+
+                if self.predMaskImage:
+                    predMask = visualize_image_item(
+                        data,
+                        fields=["pred_mask"],
+                        overlay_fields=None,
+                        field_size=self.field_size,
+                        fields_config=self.fields_config,
+                        overlay_fields_config=self.overlay_fields_config,
+                        text_config={"enable": False},
+                    )
+                    if predMask is not None:
+                        # Save the image to the specified filename
+                        newStem = f"{filename.stem}_predMask"
+                        predMask.save(filename.with_stem(newStem))
 
         return self.predictions
 
@@ -833,7 +870,7 @@ class AOIFiftyOneVisJob(Job):
         data_args (Dict): data args used to get data name and category name.
     """
 
-    name = "Visualize"
+    name = "51Visualize"
 
     def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, dataArgs: dict[str,Any], modelName:str) -> None:
         super().__init__()
@@ -852,6 +889,8 @@ class AOIFiftyOneVisJob(Job):
             # if not specified, take class name
             self.dataset_name = dataArgs["class_path"].split(".")[-1]
         self.category:str = dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
+        logger.debug(f"{self.name}: Dataset name: {self.dataset_name}")
+        logger.debug(f"{self.name}: Selected Category: {self.category}")
 
     def run(self, task_id: int | None = None) -> Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch]:
         """Run job that visualizes all prediction data.

@@ -1,7 +1,7 @@
 # https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/patchcore.html
 train_batch_size: 8
 eval_batch_size: 8
-max_epochs: 1 # Patchcore only needs 1 epoch
+max_epochs: 200 # default for inp_former only needs 1 epoch
 max_workers: 8
 test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
 test_split_ratio: 0.2
@@ -17,3 +17,17 @@ callbacks:
       monitor: pixel_val_AUROC
       mode: max
 
+# optimizer: 
+#     "lr": 1e-3
+#     "betas": (0.9, 0.999)
+#     "weight_decay": 1e-4
+#     "amsgrad": True
+#     "eps": 1e-10
+# scheduler: 
+#     "base_value": 1e-3
+#     "final_value": 1e-4
+#     "warmup_iters": 100
+# trainer:
+#     "gradient_clip_val": 0.1
+#     "num_sanity_val_steps": 0
+#     "max_epochs": MAX_EPOCHS_DEFAULT

@@ -9,6 +9,7 @@ import fiftyone as fo # base library and app
 import logging
 import torch
 import json
+import os
 
 from typing import TYPE_CHECKING, List, Any
 from collections.abc import Generator
@@ -30,6 +31,7 @@ from anomalib.post_processing import PostProcessor
 from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
 from anomalib.metrics.evaluator import Evaluator
 from anomalib.utils.logging import redirect_logs
+
 # ANOMALIB PIPELINES
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.components.base import Pipeline, Runner
@@ -47,10 +49,15 @@ from anomalib.pipelines.tiled_ensemble.components import (
 from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT
 
 # OWN FILES
-from data.anomaly_datasets import importDataset, FODataModule, FODataset, AnomalibDataset
-from tiling.ensemble_engine import AOITiledEnsembleEngine
-from tiling.ensemble_tiling import EnsembleTiler, TileCollater
-from tiling.jobs import (
+# try:
+#     base = Path(__file__).parent
+#     ad_base = Path(__file__).parent.parent
+# except NameError:
+#     base = Path.cwd()  # fallback for notebooks/REPL
+from src.data.anomaly_datasets import importDataset, FODataModule, FODataset, AnomalibDataset
+from src.tiling.ensemble_engine import AOITiledEnsembleEngine
+from src.tiling.ensemble_tiling import EnsembleTiler, TileCollater
+from src.tiling.jobs import (
     AOIStatisticsJobGenerator,
     AOIMergeJobGenerator,
     AOINormalizationJobGenerator,
@@ -487,8 +494,11 @@ class PredTiledEnsemble(Pipeline):
                  gtAvail:bool=False) -> None:
         self.root_dir = Path(root_dir)                                          # Where this pipeline stores results from
         self.trainingDir = Path(trainingDir)   
-        self.ckptDir = ckptDir                                 # Where the training pipeline stored results like threshold and normalization stats
+        self.ckptDir = ckptDir
+        logger.debug(f"Current working directory (cwd): {os.getcwd()}")                                 # Where the training pipeline stored results like threshold and normalization stats
         logger.info(f"Root directory for Eval Pipeline: {root_dir}")
+        logger.info(f"Checkpoint directory: {ckptDir}")
+        logger.info(f"Stats directory: {trainingDir}")
         self.dataset:fo.Dataset = dataset
         self.predictDataset = predictDataset
         self.datamodule:AnomalibDataModule|None = datamodule
@@ -636,6 +646,8 @@ class PredTiledEnsemble(Pipeline):
         # 5. (optional) threshold to get labels from scores
         if thresholding_stage == ThresholdingStage.IMAGE:
             runners.append(SerialRunner(AOIThresholdingJobGenerator(self.trainingDir, normalization_stage)))
+
+        runners.append(SerialRunner(AOIVisualizationJobGenerator(self.root_dir, data_args=dataArgs, visualisation_args=visualisation_args, pred_mask_image=True)))
 
         # # 6. visualize predictions
         # if self.dataset is not None:
