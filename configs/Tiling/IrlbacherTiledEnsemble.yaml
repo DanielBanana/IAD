@@ -1,5 +1,5 @@
 seed: 42
-accelerator: "mps"
+accelerator: "gpu"
 default_root_dir: 
 # default_root_dir: "results/tiled"
 

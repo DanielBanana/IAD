@@ -1,8 +1,3 @@
-seed: 42
-accelerator: "mps"
-default_root_dir: 
-# default_root_dir: "results/tiled"
-
 tiling:
   image_size: [256,256]
   tile_size: [128,128]

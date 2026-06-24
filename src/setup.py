@@ -145,7 +145,7 @@ def mapNameToModule(modelName: str) -> Optional[Type[AnomalibModule]]:
         model = Patchcore
     elif modelName.lower() == "padim":
         model = Padim
-    elif modelName.lower() == "inp_former":
+    elif modelName.lower() == "InpFormer":
         model = InpFormer
     else:
         KeyError(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")
@@ -180,7 +180,7 @@ def create_model(modelName:str, modelConfig:dict[str,Any]) -> Optional[AnomalibM
         model = Padim(**modelConfig)
     elif modelName == "Padim":
         model = Padim(**modelConfig)
-    elif modelName == "inp_former":
+    elif modelName == "InpFormer":
         model = InpFormer(**modelConfig)
     else:
         print(f"Model {modelName} not found! \n Available models are: {', '.join(MODELS)}")

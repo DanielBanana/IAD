@@ -621,10 +621,12 @@ def get_ensemble_model(
         
     # first make temporary model to get object
     temp_model = get_model(model_args)
+    logger.info(f"Configuring model {temp_model.__class__.__name__} for ensemble with input size {input_size} and {model_args}")
 
     # create custom pre_proc with correct input size
     # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
-    _pre_processor = temp_model.configure_pre_processor(input_size)
+    logger.info(f"Configuring pre-processor for ensemble model with input size {input_size}")
+    _pre_processor = temp_model.configure_pre_processor(image_size=input_size, crop_size=input_size[0])
     
     name = model_args["class_path"]
 

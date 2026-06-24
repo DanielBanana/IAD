@@ -25,7 +25,7 @@ inferencer:
   config: "Prediction.yaml"
 
 dataset:
-  name: "MVTecAD"
+  name: "MVTecADShort"
   category: "cable"
   split:
     - "train"

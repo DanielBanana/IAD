@@ -9,19 +9,22 @@ logging:
   logFileName: "general.log"
 
 model:
-  name: "Patchcore"
-  config: pathcore.yaml
-  weights_path: "results/Irlbacher/MDF6/pathcore/tiled/checkpoints"
+  name: "padim"
+  config: "padim.yaml"
+  weights_path: "results/Irlbacher2023/MDF6/padim/tiled/checkpoints"
 
 tiling:
   enable: True
   config: "IrlbacherTiledEnsemble.yaml"
 
 trainer:
-  config: "Training_patchcore.yaml"
+  config: "Training_padim.yaml"
+
+inferencer:
+  config: "Prediction.yaml"
 
 dataset:
-  name: "Irlbacher"
+  name: "Irlbacher2023"
   category: "MDF6"
   split:
     - "train"

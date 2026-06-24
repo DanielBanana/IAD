@@ -9,16 +9,17 @@ logging:
   logFileName: "general.log"
 
 model:
-  name: "Patchcore"
-  config: patchcore.yaml
-  weights_path: "results/MVTecADShort/bottle/patchcore/tiled/checkpoints"
+  name: "InpFormer"
+  config: InpFormer.yaml
+  weights_path: "results/MVTecAD/bottle/InpFormer/tiled/checkpoints"
+  trainingDir: "../results/MVTecAD/bottle/InpFormer/tiled"
 
 tiling:
   enable: True
   config: "TiledEnsemble.yaml"
 
 trainer:
-  config: "Training_patchcore.yaml"
+  config: "Training_InpFormer.yaml"
 
 inferencer:
   config: "Prediction.yaml"

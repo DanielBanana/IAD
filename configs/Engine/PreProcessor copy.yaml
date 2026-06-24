@@ -2,9 +2,9 @@ transform:
   # - name: "Resize"
   #   args:
   #     size: [128, 128]  # [height, width]
-  # - name: "CenterCrop" 
-  #   args:
-  #     size: [128, 128]  # [height, width]
+  - name: "CenterCrop" 
+    args:
+      size: [128, 128]  # [height, width]
   - name: "Normalize"
     args:
       mean: [0.485, 0.456, 0.406]

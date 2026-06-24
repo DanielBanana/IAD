@@ -1,12 +1,7 @@
-seed: 42
-accelerator: "mps"
-default_root_dir: 
-# default_root_dir: "results/tiled"
-
 tiling:
   image_size: [256,256]
-  tile_size: [256,256]
-  stride: [256,256]
+  tile_size: [140,140]
+  stride: [128,128]
 
 normalization_stage: image # on what level we normalize, options: [tile, image, none]
 thresholding_stage: image # stage at which we apply threshold, options: [tile, image]

@@ -109,6 +109,7 @@ class DatasetSession:
 
         AL_PredictDataset:Optional[PredictDataset] = None
 
+
         if split == ("pred",):
             FO_Dataset, AL_PredictDataset = importPredictDataset(datasetPath, name=datasetName, overwrite=overwrite)
         else:
@@ -163,6 +164,7 @@ class DatasetSession:
                 logger.info(f"There are {datasetSession.FO_Dataset.count()} images in the {datasetName} dataset.")
                 logger.info(f"There are {len(datasetSession.categories)} categorie(s) in the {datasetName} dataset.")
                 logger.info(datasetSession.categories)
+                datasetSession.datasetName = datasetName
                 return datasetSession
             else:
                 logger.warning(f"Import was not successfull")
@@ -190,7 +192,8 @@ class DatasetSession:
             # we make a separate dataset out of the View since some operations do not work on dataset views
             try:
                 FO_Dataset_ = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
-            except ValueError:
+            except ValueError as e:
+                logger.error(e)
                 logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
                 fo.delete_dataset(f"{self.datasetName}-{self.category}")
                 FO_Dataset_ = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
@@ -496,7 +499,7 @@ class AnomalyDetectionManager:
             configDir=configDir,
             )
         
-        manager.generateModel(f"{productConfig["model"]["config"]}", configDir)
+        manager.generateModel(f"{productConfig['model']['config']}", configDir)
 
         if productConfig["tiling"]["enable"]:
             manager.setupTiling(configDir / "Tiling" / productConfig["tiling"]["config"])
@@ -675,7 +678,8 @@ class AnomalyDetectionManager:
         if modelConfig is not None:
             self.modelConfig = modelConfig
         
-        datamoduleParams:dict[str,Any] = {key: trainingConfig[key] for key, value in trainingConfig.items() if value in DATAMODULE_PARAMS}
+        datamoduleParams:dict[str,Any] = {key: trainingConfig[key] for key, value in trainingConfig.items() if key in DATAMODULE_PARAMS}
+        trainerParams:dict[str,Any] = {key: trainingConfig[key] for key, value in trainingConfig.items() if key in ENGINE_PARAMS}
         datamodule = datasetSession.setupDatamodule(datamoduleParams, self.outputPath)
         gtAvail:bool = True if len(datasetSession.FO_Dataset.exists("ground_truth"))>0 else False
 
@@ -688,7 +692,8 @@ class AnomalyDetectionManager:
             logger.info(f"Datasetview is used for training: {datasetSession.FO_DatasetView}")
             try:
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
-            except ValueError:
+            except ValueError as e:
+                logger.error(e)
                 logger.info(f"Deleting {datasetSession.datasetName}-{datasetSession.category} from database and reloading.")
                 fo.delete_dataset(f"{datasetSession.datasetName}-{datasetSession.category}")
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
@@ -718,6 +723,8 @@ class AnomalyDetectionManager:
             self.tilingConfigDict["model"] = self.modelConfig["model"]
         else:
             raise ValueError("modelConfig missing")
+        self.tilingConfigDict["Trainer"] = trainerParams
+        logger.info(f"Running tiled ensemble training pipeline with config: {self.tilingConfigDict}")
         trainPipeline.run(self.tilingConfigDict, "")
 
     def eval(self, datasetSession: DatasetSession, evalConfig:Path, tiling:bool=False, ckptDir:Path|None=None):
@@ -770,7 +777,8 @@ class AnomalyDetectionManager:
             # we make a separate dataset out of the View since some operations do not work on dataset views
             try:
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
-            except ValueError:
+            except ValueError as e:
+                logger.error(e)
                 logger.info(f"Deleting {datasetSession.datasetName}-{datasetSession.category} from database and reloading.")
                 fo.delete_dataset(f"{datasetSession.datasetName}-{datasetSession.category}")
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
@@ -818,7 +826,8 @@ class AnomalyDetectionManager:
             # we make a separate dataset out of the View since some operations do not work on dataset views
             try:
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
-            except ValueError:
+            except ValueError as e:
+                logger.error(e)
                 logger.info(f"Deleting {datasetSession.datasetName}-{datasetSession.category} from database and reloading.")
                 fo.delete_dataset(f"{datasetSession.datasetName}-{datasetSession.category}")
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
@@ -941,7 +950,8 @@ class AnomalyDetectionManager:
             # we make a separate dataset out of the View since some operations do not work on dataset views
             try:
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
-            except ValueError:
+            except ValueError as e:
+                logger.error(e)
                 logger.info(f"Deleting {datasetSession.datasetName}-{datasetSession.category} from database and reloading.")
                 fo.delete_dataset(f"{datasetSession.datasetName}-{datasetSession.category}")
                 FO_Dataset_ = datasetSession.FO_DatasetView.clone(name=f"{datasetSession.datasetName}-{datasetSession.category}", persistent=False)
@@ -1467,7 +1477,7 @@ class AnomalyDetectionManager_():
                                       configDir=configDir,
                                       datasetDir=datasetDir)
         
-        manager.generateModel(f"{config["model"]["config"]}", configDir)
+        manager.generateModel(f"{config['model']['config']}", configDir)
         datasetName:str = config["dataset"]["name"]
         datasetPath = datasetDir/datasetName
         manager.loadDatasetFromDisk(datasetPath, datasetName, overwrite=True, merge=False, split=tuple(config["dataset"]["split"]))
@@ -1698,6 +1708,7 @@ class AnomalyDetectionManager_():
             self.tilingConfigDict["model"] = self.modelConfig["model"]
         else:
             raise ValueError("modelConfig missing")
+        # logger.info(f"Running tiled ensemble training pipeline with config: {self.tilingConfigDict}")
         trainPipeline.run(self.tilingConfigDict, "")
         # trainPipeline.run(args)
         self.trainPipeline = trainPipeline

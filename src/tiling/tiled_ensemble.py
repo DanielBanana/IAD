@@ -733,7 +733,7 @@ class TrainModelJob(Job):
 
     """
 
-    name = "TrainModels"
+    name = "Trainer"
 
     def __init__(
         self,
@@ -778,6 +778,7 @@ class TrainModelJob(Job):
         seed_everything(self.seed)
 
         # create engine for specific tile location and fit the model
+        logger.info(f"Creating engine for tile {self.tile_index} on device {devices}, accelerator: {self.accelerator}, trainer_args: {self.trainer_args}")
         engine = get_ensemble_engine(
             tile_index=self.tile_index,
             accelerator=self.accelerator,
@@ -785,6 +786,9 @@ class TrainModelJob(Job):
             root_dir=self.root_dir,
             trainer_args=self.trainer_args,
         )
+
+        logger.info(f"Fitting model for tile {self.tile_index} on device {devices}, accelerator: {self.accelerator}")
+
         engine.fit(model=self.model, datamodule=self.datamodule)
         # move model to cpu to avoid memory issues as the engine is returned to be used in validation phase
         engine.model.cpu()
@@ -885,7 +889,7 @@ class TrainModelJobGenerator(JobGenerator):
                 root_dir=self.root_dir,
                 tile_index=tile_index,
                 normalization_stage=self.normalization_stage,
-                trainer_args=args.get("trainer", {}),
+                trainer_args=args,
                 model=model,
                 datamodule=datamodule,
             )
@@ -1450,7 +1454,6 @@ def parse_trainer_kwargs(trainer_args: dict | None) -> Namespace | dict:
 
     return objects  # noqa: RET504
 
-
 def get_ensemble_engine(
     tile_index: tuple[int, int],
     accelerator: str,
@@ -1478,6 +1481,8 @@ def get_ensemble_engine(
     trainer_kwargs.pop("accelerator", None)
     trainer_kwargs.pop("default_root_dir", None)
     trainer_kwargs.pop("devices", None)
+
+    logger.info("Engine: Accelerator: %s, devices: %s", accelerator, devices)
 
     # create engine for specific tile location
     engine = AOITiledEnsembleEngine(

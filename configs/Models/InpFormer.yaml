@@ -2,7 +2,7 @@
 # https://anomalib.readthedocs.io/en/latest/markdown/guides/reference/models/image/fastflow.html
 # Non-primitive types: reference other YAML files
 model:
-  class_path: "inp_former"
+  class_path: "InpFormer"
   init_args:
     encoder_name: "dinov2reg_vit_base_14" # Name of the pre-trained Vision Transformer backbone to use as the encoder (e.g., a DINOv2 variant): 
         # backbones: dinov2, dinov2reg; enc"small", "base", "large"
