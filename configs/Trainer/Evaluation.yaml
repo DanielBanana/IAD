@@ -1,7 +1,7 @@
 # Default Evaluation
 train_batch_size: 1
 eval_batch_size: 1
-# max_epochs: 1 # Not needed for evaluation
+max_epochs: 1 # Not needed for evaluation
 max_workers: 8
 test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
 test_split_ratio: 0.2

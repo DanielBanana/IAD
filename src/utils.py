@@ -22,6 +22,7 @@ from anomalib.visualization import ImageVisualizer
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 
 # OWN FILES
+from .configs import parse_model_init_args
 from .setup import define_metrics
 from .settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 from .tiling.post_processor import AOIPostProcessor
@@ -81,86 +82,27 @@ def exclude_from_logger():
         sys.stdout = original_stdout  # Restore logger stdout
 
 def loadModelConfig(configDir:Path, modelConfigPath:Path, copyDir:Path|None=None, vtype:VisualizerType|None=None, fieldSize:Tuple[int,int]|None=None) -> Tuple[Dict[str,Any], Path|None, Path|None, Path|None]:
-    """Load YAML config file."""
+    """Load YAML model config and resolve engine config references."""
+    init_args, pre_processor_path, post_processor_path, evaluator_path = parse_model_init_args(
+        modelConfigPath,
+        config_dir=configDir,
+        copy_dir=copyDir,
+    )
 
-    # Open the general config file
-    with open(modelConfigPath, 'r') as f:
-        modelConfig = yaml.safe_load(f)
-
-    modelConfig = dict(modelConfig)
-
-    # If the configs should be copied create the folder and copy the general config
-    if copyDir is not None:
-        relativePath:Path = modelConfigPath.relative_to(configDir)
-        copyPath = copyDir / relativePath
-        copyPath.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(modelConfigPath, copyPath)
-
-    # Read the preprocessor and copy if desired
-    
-    pre_processor:str|None = modelConfig["model"]["init_args"].pop("pre_processor_path",None)
-    post_processor:str|None = modelConfig["model"]["init_args"].pop("post_processor_path",None)
-    evaluator:str|None = modelConfig["model"]["init_args"].pop("evaluator_path",None)
-
-    preProcessorPath:Path|None
-    postProcessorPath:Path|None
-    evaluatorPath:Path|None
-
-    if pre_processor is not None:
-        preProcessorPath = configDir / "Engine" /  Path(pre_processor)
-        if copyDir is not None:
-            relativePath:Path = preProcessorPath.relative_to(configDir)
-            copyPath = copyDir / relativePath
-            copyPath.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(modelConfigPath, copyPath)
-        transform = load_transform_from_yaml(preProcessorPath)
-        modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor(transform)
-    else:
-        modelConfig["model"]["init_args"]["pre_processor"] = PreProcessor()
-        preProcessorPath = None
-
-    # Read the Postprocessor and copy if desired
-    if post_processor is not None:
-        postProcessorPath = configDir / "Engine" / Path(post_processor)
-        if copyDir is not None:
-            relativePath:Path = postProcessorPath.relative_to(configDir)
-            copyPath = copyDir / relativePath
-            copyPath.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(modelConfigPath, copyPath)
-        with open(postProcessorPath, 'r') as f:
-            postProcessorConfig = yaml.safe_load(f)
-        modelConfig["model"]["init_args"]["post_processor"] = AOIPostProcessor(**postProcessorConfig)
-    else:
-        modelConfig["model"]["init_args"]["post_processor"] = AOIPostProcessor(
-            enable_normalization=True,
-            enable_threshold_matching=True,
-            enable_thresholding=True,
-            image_sensitivity=0.01,
-            pixel_sensitivity=0.01
-        )
-        postProcessorPath = None
-    
     if vtype is None:
-        modelConfig["model"]["init_args"]["visualizer"] = False
+        init_args["visualizer"] = False
     else:
         if fieldSize is None:
             raise ValueError(f"If Visualiser is to be created a fieldSize needs to be given; {fieldSize} not allowed")
-        else:
-            modelConfig["model"]["init_args"]["visualizer"] = getVisualizer(vtype=vtype, fieldSize=fieldSize)
+        init_args["visualizer"] = getVisualizer(vtype=vtype, fieldSize=fieldSize)
 
-    if evaluator is not None:
-        evaluatorPath = configDir / "Engine" / Path(evaluator)
-        if copyDir is not None:
-            relativePath:Path = evaluatorPath.relative_to(configDir)
-            copyPath = copyDir / relativePath
-            copyPath.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(modelConfigPath, copyPath)
-        modelConfig["model"]["init_args"]["evaluator"] = Evaluator(*load_metrics_from_yaml(evaluatorPath))
-    else:
-        modelConfig["model"]["init_args"]["evaluator"] = getDefaultEvaluator()
-        evaluatorPath=None
+    with open(modelConfigPath, 'r') as f:
+        model_config = yaml.safe_load(f)
 
-    return modelConfig, preProcessorPath, postProcessorPath, evaluatorPath
+    model_config = dict(model_config)
+    model_config["model"]["init_args"] = init_args
+
+    return model_config, pre_processor_path, post_processor_path, evaluator_path
 
 def load_transform_from_yaml(configPath:Path):
     with open(configPath, "r") as f:

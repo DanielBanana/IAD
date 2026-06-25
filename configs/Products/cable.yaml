@@ -9,8 +9,8 @@ logging:
   logFileName: "general.log"
 
 model:
-  name: "inp_former"
-  config: inp_former.yaml
+  name: "InpFormer"
+  config: InpFormer.yaml
   weights_path: "results/MVTecAD/cable/inp_former/tiled/checkpoints"
   trainingDir: "../results/MVTecAD/cable/inp_former/tiled"
 
@@ -19,7 +19,7 @@ tiling:
   config: "TiledEnsemble.yaml"
 
 trainer:
-  config: "Training_inp_former.yaml"
+  config: "Training_InpFormer.yaml"
 
 inferencer:
   config: "Prediction.yaml"

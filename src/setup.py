@@ -20,7 +20,7 @@ from anomalib.loggers import AnomalibTensorBoardLogger, AnomalibWandbLogger
 from lightning.pytorch.callbacks import TQDMProgressBar
 
 # OWN FILES
-from .settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from settings import DATASETS, CATEGORIES, MODELS, DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
 
 def define_metrics() -> Tuple[List[Any], List[Any]]:
     # val metrics (needed for early stopping)
