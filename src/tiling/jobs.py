@@ -23,11 +23,13 @@ from torchvision.tv_tensors import Image
 from torchvision.transforms.v2 import Compose, Resize, Transform
 from lightning import LightningModule, Trainer
 from torchvision.tv_tensors import Mask
+from userConfigs import DataModuleConfig
 
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.metrics import AUROC
-from anomalib.visualization import ImageVisualizer, visualize_image_item
+from anomalib.visualization import ImageVisualizer, visualize_image_item, Visualizer
+
 from anomalib.visualization.image.item_visualizer import (
     DEFAULT_FIELDS_CONFIG,
     DEFAULT_OVERLAY_FIELDS_CONFIG,
@@ -50,7 +52,9 @@ from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
 
 # OWN FILES
-from src.data.anomaly_datasets import FODataModule, FODataset
+from data.anomaly_datasets import FODataModule, FODataset
+from userConfigs import TilingPipelineConfig, ModelConfig
+from setup import create_model
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +158,7 @@ class AOIStatisticsJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict[str,Any] | None = None,
+        args: Dict[str,Any] | None = None,
         prev_stage_result: List[ImageBatch] | None = None,
     ) -> Generator[AOIStatisticsJob, None, None]:
         """Return a generator producing a single stats calculating job.
@@ -235,10 +239,9 @@ class AOIMergeJob(Job):
 class AOIMergeJobGenerator(JobGenerator):
     """Generate MergeJob."""
 
-    def __init__(self, tiling_args: Dict[str, Any], data_args: Dict[str, Any],) -> None:
+    def __init__(self, tilingPipelineConfig: TilingPipelineConfig) -> None:
         super().__init__()
-        self.tiling_args = tiling_args
-        self.data_args = data_args
+        self.tilingPipelineConfig = tilingPipelineConfig
 
     @property
     def job_class(self) -> type:
@@ -261,7 +264,7 @@ class AOIMergeJobGenerator(JobGenerator):
         """
         del args  # args not used here
 
-        tiler = get_ensemble_tiler(self.tiling_args)
+        tiler = get_ensemble_tiler(self.tilingPipelineConfig.to_dict())
         if prev_stage_result is not None:
             yield AOIMergeJob(prev_stage_result, tiler)
         else:
@@ -456,7 +459,7 @@ class AOIMetricsCalculationJob(Job):
     def __init__(
         self,
         accelerator: str,
-        prev_stage_result: List[ImageBatch] | None,
+        prev_stage_result: Tuple[List[ImageBatch],Any] | List[ImageBatch],
         root_dir: Path,
         evaluator: nn.Module,
     ) -> None:
@@ -471,7 +474,7 @@ class AOIMetricsCalculationJob(Job):
         self.root_dir = root_dir
         self.evaluator = evaluator
 
-    def run(self, task_id: int | None = None) -> dict:
+    def run(self, task_id: int | None = None) -> Tuple[List[ImageBatch],Dict[str,Any]]:
         """Run a job that calculates image and pixel level metrics.
 
         Args:
@@ -483,14 +486,14 @@ class AOIMetricsCalculationJob(Job):
         del task_id  # not needed here
 
         logger.info(f"Starting {self.name}!.")
-        logger.debug(f"{self.name}: Sample: {self.predictions[0].image[0]}")
-        logger.debug(f"{self.name}: Sample: {self.predictions[0].anomaly_map[0]}")
+        logger.debug(f"{self.name}: Sample: {self.predictions[0].image}")
+        logger.debug(f"{self.name}: Sample: {self.predictions[0].anomaly_map}")
 
         for batch in tqdm(self.predictions, desc="Calculating metrics"):
             self.evaluator.on_test_batch_end(None, None, None, batch=batch, batch_idx=0)
 
         # compute all metrics on specified accelerator
-        metrics_dict = {}
+        metrics_dict:Dict[str,Any] = {}
         for metric in self.evaluator.test_metrics:
             metric.to(self.accelerator)
             metrics_dict[metric.name] = metric.compute().item()
@@ -502,7 +505,7 @@ class AOIMetricsCalculationJob(Job):
         # save path used in `save` method
         metrics_dict["save_path"] = self.root_dir / "metric_results.csv"
 
-        return metrics_dict
+        return self.predictions, metrics_dict
 
     @staticmethod
     def collect(results: list[RUN_RESULTS]) -> GATHERED_RESULTS:
@@ -511,7 +514,7 @@ class AOIMetricsCalculationJob(Job):
         Returns:
             list[Any]: list of predictions.
         """
-        # take the first element as result is list of dict here
+        # take the first element as the SerialRunner this Job is run with creates a list of Runs (there is only one in this case)
         return results[0]
 
     @staticmethod
@@ -520,13 +523,13 @@ class AOIMetricsCalculationJob(Job):
         logger.info("Saving metrics to csv.")
 
         # get and remove path from stats dict
+        results = results[1] # Results are a tuple of presdictions and the metric stats we want to save
         results_path: Path = results.pop("save_path")
         results_path.parent.mkdir(parents=True, exist_ok=True)
 
         df_dict = {k: [v] for k, v in results.items()}
         metrics_df = pd.DataFrame(df_dict)
         metrics_df.to_csv(results_path, index=False)
-
 
 class AOIMetricsCalculationJobGenerator(JobGenerator):
     """Generate MetricsCalculationJob.
@@ -539,11 +542,13 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         self,
         accelerator: str,
         root_dir: Path,
-        model_args: Dict[str,Any],
+        modelConfig: ModelConfig,
+        tile_size: Tuple[int,int]
     ) -> None:
         self.accelerator = accelerator
         self.root_dir = root_dir
-        self.model_args = model_args
+        self.modelConfig = modelConfig
+        self.tile_size = tile_size
 
     @property
     def job_class(self) -> type:
@@ -566,7 +571,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         """
         del args  # args not used here
 
-        model = get_ensemble_model(self.model_args, normalization_stage=NormalizationStage.IMAGE, input_size=(10, 10))
+        model = get_ensemble_model(self.modelConfig, normalization_stage=NormalizationStage.IMAGE, input_size=self.tile_size)
 
         if model.evaluator is not None:
             yield AOIMetricsCalculationJob(
@@ -581,10 +586,9 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         
 
 def get_ensemble_model(
-    model_args: dict[str,dict[str,Any]],
-    input_size: int | Tuple[int, int],
+    modelConfig: ModelConfig,
+    input_size: Tuple[int,int],
     normalization_stage: NormalizationStage,
-
 ) -> AnomalibModule:
     """Get model prepared for ensemble training.
 
@@ -597,40 +601,51 @@ def get_ensemble_model(
         AnomalyModule: model with input_size setup
     """
 
-    if isinstance(input_size, int):
-        input_size = (input_size, input_size)
 
-    # Take evaluator out of model args if possible
-    post_processor:PostProcessor|bool = model_args["init_args"].pop("post_processor", False)
-    pre_processor:PreProcessor|bool = model_args["init_args"].pop("pre_processor", False)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
-    evaluator:Evaluator|bool = model_args["init_args"].pop("evaluator", False)
-    visualizer = model_args["init_args"].pop("visualizer", False) 
-    if isinstance(visualizer, ImageVisualizer):
-        visualizer.field_size = input_size
 
-    if not isinstance(evaluator, Evaluator):
-        image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
-        pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
-        image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
-        pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
-        evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
+    # # Take evaluator out of model args if possible
+    # post_processor:PostProcessor|bool = model_args["init_args"].pop("post_processor", False)
+    # pre_processor:PreProcessor|bool = model_args["init_args"].pop("pre_processor", False)        # TODO Find a way to preserve settings while also overwriting input size with tiling size
+    # evaluator:Evaluator|bool = model_args["init_args"].pop("evaluator", False)
+    # visualizer = model_args["init_args"].pop("visualizer", False) 
+    # if isinstance(visualizer, ImageVisualizer):
+    #     visualizer.field_size = input_size
 
-    if isinstance(post_processor, PostProcessor):
-        # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
-        post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
+    # if not isinstance(evaluator, Evaluator):
+    #     image_auroc_val = AUROC(fields=["pred_score", "gt_label"], prefix="image_val_")
+    #     pixel_auroc_val = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_val_")
+    #     image_auroc_test = AUROC(fields=["pred_score", "gt_label"], prefix="image_test_")
+    #     pixel_auroc_test = AUROC(fields=["anomaly_map", "gt_mask"], prefix="pixel_test_")
+    #     evaluator = Evaluator(val_metrics=[image_auroc_val, pixel_auroc_val], test_metrics=[image_auroc_test, pixel_auroc_test])
+
+    # if isinstance(post_processor, PostProcessor):
+    #     # set model normalisation only if the stage is set to tile level (but thresholding is always applied)
+    #     post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
         
-    # first make temporary model to get object
-    temp_model = get_model(model_args)
-    logger.info(f"Configuring model {temp_model.__class__.__name__} for ensemble with input size {input_size} and {model_args}")
+    # # first make temporary model to get object
+    # temp_model = get_model(model_args)
+    # logger.info(f"Configuring model {temp_model.__class__.__name__} for ensemble with input size {input_size} and {model_args}")
 
-    # create custom pre_proc with correct input size
-    # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
-    logger.info(f"Configuring pre-processor for ensemble model with input size {input_size}")
-    _pre_processor = temp_model.configure_pre_processor(image_size=input_size, crop_size=input_size[0])
+    # # create custom pre_proc with correct input size
+    # # since we can't modify input_size directly (needed during instantiation by some models like FastFlow)
+    # logger.info(f"Configuring pre-processor for ensemble model with input size {input_size}")
+    # _pre_processor = temp_model.configure_pre_processor(image_size=input_size, crop_size=input_size[0])
     
-    name = model_args["class_path"]
+    # name = model_args["class_path"]
 
-    model: AnomalibModule = get_model(name, pre_processor=_pre_processor, visualizer=visualizer, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
+    model: AnomalibModule|None = create_model(modelConfig.name, modelConfig=modelConfig.to_dict())
+    assert model is not None
+    
+    # _pre_processor = tmp_model.configure_pre_processor(image_size=input_size)
+
+    if isinstance(model.visualizer, ImageVisualizer):
+        if isinstance(input_size, int):
+            input_size = (input_size, input_size)
+        model.visualizer.field_size = input_size
+    if isinstance(model.post_processor, PostProcessor):
+        model.post_processor.enable_normalization = normalization_stage == NormalizationStage.TILE
+
+    # model: AnomalibModule = get_model(name, pre_processor=_pre_processor, visualizer=visualizer, evaluator=evaluator, post_processor=post_processor, **model_args["init_args"])
     if model.pre_processor is not None:
         model_pre_processor: nn.Module = model.pre_processor
 
@@ -642,18 +657,21 @@ def get_ensemble_model(
             update_transform = Compose([
                 transform for transform in pre_transforms.transforms if not isinstance(transform, Resize)
             ])
-        elif pre_transforms is not None:
-            update_transform = pre_transforms
         else:
-            update_transform = []
+            update_transform = pre_transforms
+
+        # elif pre_transforms is not None:
+        #     update_transform = pre_transforms
+        # else:
+        #     update_transform = []
 
         model_pre_processor.transform = update_transform
         model_pre_processor.export_transform = get_exportable_transform(update_transform)
 
-    model_args["init_args"]["post_processor"] = post_processor
-    model_args["init_args"]["pre_processor"] = pre_processor
-    model_args["init_args"]["evaluator"] = evaluator
-    model_args["init_args"]["visualizer"] = visualizer
+    # model_args["init_args"]["post_processor"] = post_processor
+    # model_args["init_args"]["pre_processor"] = pre_processor
+    # model_args["init_args"]["evaluator"] = evaluator
+    # model_args["init_args"]["visualizer"] = visualizer
 
     return model
 
@@ -670,25 +688,9 @@ class AOIVisualizationJob(Job):
         data_args (Dict): data args used to get data name and category name.
     """
 
-    name = "Visualize"
+    name = "VisualizeOnDisk"
 
-
-    # def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, dataArgs: dict[str,Any], modelName:str) -> None:
-    #     super().__init__()
-
-            
-        # self.FO_Dataset:fo.Dataset = FO_Dataset
-        # self.dataArgs:dict[str,Any] = dataArgs
-        # self.modelName:str = modelName
-        # self.dataset_name = dataArgs["init_args"].get("name", None)
-        # if self.dataset_name is None:
-        #     # if not specified, take class name
-        #     self.dataset_name = dataArgs["class_path"].split(".")[-1]
-        # self.category:str = dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
-        # logger.debug(f"{self.name}: Dataset name: {self.dataset_name}")
-        # logger.debug(f"{self.name}: Selected Category: {self.category}")
-
-    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, data_args: dict[str,Any], visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
+    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, dataset_name:str, category:str, visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
         super().__init__()
         # self.predictions = prev_stage_result
         if isinstance(prev_stage_result, Tuple):
@@ -722,11 +724,12 @@ class AOIVisualizationJob(Job):
         if self.text_config is None:
             self.text_config = DEFAULT_TEXT_CONFIG
 
-        self.dataset_name = data_args["init_args"].get("name", None)
-        if self.dataset_name is None:
-            # if not specified, take class name
-            self.dataset_name = data_args["class_path"].split(".")[-1]
-        self.category = data_args["init_args"].get("category", "")
+        self.dataset_name = dataset_name
+        self.category = category
+        # if self.dataset_name is None:da
+        #     # if not specified, take class name
+        #     self.dataset_name = data_args["class_path"].split(".")[-1]
+        # self.category = dataModuleConfig
 
     def run(self, task_id: int | None = None) -> list[Any]:
         """Run job that visualizes all prediction data.
@@ -764,7 +767,7 @@ class AOIVisualizationJob(Job):
         #             logger.error("Segmentation prediction mask not available.")
         #         sample.save()
 
-        for batch in tqdm(self.predictions, desc="51 Visualisation"):
+        for batch in tqdm(self.predictions, desc="Visualisation"):
             for data in batch:
                 logger.debug(f"{self.name}: item: {data}")
                 # for item in batch:
@@ -830,9 +833,10 @@ class AOIVisualizationJobGenerator(JobGenerator):
         root_dir (Path): Root directory where images will be saved (root/images).
     """
 
-    def __init__(self, root_dir: Path, data_args: dict[str,Any], visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
+    def __init__(self, root_dir: Path, dataset_name:str, category:str, visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
         self.root_dir = root_dir
-        self.data_args = data_args
+        self.dataset_name = dataset_name
+        self.category = category
         self.visualisation_args = visualisation_args
         self.pred_mask_image = pred_mask_image
 
@@ -843,7 +847,7 @@ class AOIVisualizationJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str,Any] | None = None,
         prev_stage_result: list[Any] | None = None,
     ) -> Generator[AOIVisualizationJob, None, None]:
         """Return a generator producing a single visualization job.
@@ -858,7 +862,7 @@ class AOIVisualizationJobGenerator(JobGenerator):
         del args  # args not used here
 
         if prev_stage_result is not None:
-            yield AOIVisualizationJob(prev_stage_result, self.root_dir, data_args=self.data_args, visualisation_args=self.visualisation_args, pred_mask_image=self.pred_mask_image)
+            yield AOIVisualizationJob(prev_stage_result, root_dir=self.root_dir, dataset_name=self.dataset_name, category=self.category, visualisation_args=self.visualisation_args, pred_mask_image=self.pred_mask_image)
         else:
             msg = "Visualization job requires tile level predictions from previous step."
             raise ValueError(msg)
@@ -874,7 +878,7 @@ class AOIFiftyOneVisJob(Job):
 
     name = "51Visualize"
 
-    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, dataArgs: dict[str,Any], modelName:str) -> None:
+    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, datamodule: FODataModule, modelName:str) -> None:
         super().__init__()
         if isinstance(prev_stage_result, Tuple):
             self.predictions = prev_stage_result[0]
@@ -883,16 +887,14 @@ class AOIFiftyOneVisJob(Job):
             self.predictions = prev_stage_result
             self.rest = None
             
-        self.FO_Dataset:fo.Dataset = FO_Dataset
-        self.dataArgs:dict[str,Any] = dataArgs
-        self.modelName:str = modelName
-        self.dataset_name = dataArgs["init_args"].get("name", None)
-        if self.dataset_name is None:
-            # if not specified, take class name
-            self.dataset_name = dataArgs["class_path"].split(".")[-1]
-        self.category:str = dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
+        self.FO_Dataset = FO_Dataset
+        self.datamodule = datamodule
+        self.modelName = modelName
+        self.dataset_name = datamodule.name
+        self.category:str = datamodule.category # dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
         logger.debug(f"{self.name}: Dataset name: {self.dataset_name}")
         logger.debug(f"{self.name}: Selected Category: {self.category}")
+        logger.debug(f"{self.name}: Model name: {self.modelName}")
 
     def run(self, task_id: int | None = None) -> Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch]:
         """Run job that visualizes all prediction data.
@@ -954,8 +956,8 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         root_dir (Path): Root directory where images will be saved (root/images).
     """
 
-    def __init__(self, FO_Dataset:fo.Dataset, data_args: dict[str,dict[str,Any]], modelName:str) -> None:
-        self.data_args = data_args
+    def __init__(self, FO_Dataset:fo.Dataset, datamodule:FODataModule, modelName:str) -> None:
+        self.datamodule = datamodule
         self.FO_Dataset = FO_Dataset
         self.modelName = modelName
 
@@ -966,7 +968,7 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str, Any] | None = None,
         prev_stage_result: List[ImageBatch] | None = None,
     ) -> Generator[AOIFiftyOneVisJob, None, None]:
         """Return a generator producing a single visualization job.
@@ -981,7 +983,7 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         del args  # args not used here
 
         if prev_stage_result is not None:
-            yield AOIFiftyOneVisJob(prev_stage_result, self.FO_Dataset, dataArgs=self.data_args, modelName=self.modelName)
+            yield AOIFiftyOneVisJob(prev_stage_result, self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelName)
         else:
             msg = "Visualization job requires tile level predictions from previous step."
             raise ValueError(msg)
@@ -1100,7 +1102,7 @@ class AOINormalizationJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str,Any] | None = None,
         prev_stage_result: List[ImageBatch] | None = None,
     ) -> Generator[AOINormalizationJob, None, None]:
         """Return a generator producing a single normalization job.
@@ -1218,7 +1220,7 @@ class AOIThresholdingJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str,Any] | None = None,
         prev_stage_result: list[Any] | None = None,
     ) -> Generator[AOIThresholdingJob, None, None]:
         """Return a generator producing a single thresholding job.
@@ -1379,16 +1381,14 @@ class AOISmoothingJob(Job):
     @staticmethod
     def save(results: GATHERED_RESULTS) -> None:
         """Nothing to save in this job."""
-
-
 class AOISmoothingJobGenerator(JobGenerator):
     """Generate SmoothingJob."""
 
-    def __init__(self, accelerator: str, tiling_args: dict, data_args: dict) -> None:
+    def __init__(self, accelerator: str, tilingPipelineConfig: TilingPipelineConfig) -> None:
         super().__init__()
         self.accelerator = accelerator
-        self.tiling_args = tiling_args
-        self.data_args = data_args
+        self.tilingPipelineConfig = tilingPipelineConfig
+        # self.data_args = data_args
 
     @property
     def job_class(self) -> type:
@@ -1397,7 +1397,7 @@ class AOISmoothingJobGenerator(JobGenerator):
 
     def generate_jobs(
         self,
-        args: dict | None = None,
+        args: Dict[str, Any] | None = None,
         prev_stage_result: List[ImageBatch] | None = None,
     ) -> Generator[AOISmoothingJob, None, None]:
         """Return a generator producing a single seam smoothing job.
@@ -1409,17 +1409,18 @@ class AOISmoothingJobGenerator(JobGenerator):
         Returns:
             Generator[SmoothingJob, None, None]: SmoothingJob generator
         """
-        if args is None:
-            msg = "SeamSmoothing job requires config args"
-            raise ValueError(msg)
+        # if args is None:
+        #     msg = "SeamSmoothing job requires config args"
+        #     raise ValueError(msg)
+        del args
         # tiler is used to determine where seams appear
-        tiler = get_ensemble_tiler(self.tiling_args)
+        tiler = get_ensemble_tiler(self.tilingPipelineConfig.to_dict())
         if prev_stage_result is not None:
             yield AOISmoothingJob(
                 accelerator=self.accelerator,
                 predictions=prev_stage_result,
-                width_factor=args["width"],
-                filter_sigma=args["sigma"],
+                width_factor=self.tilingPipelineConfig.seam_smoothing.width,
+                filter_sigma=self.tilingPipelineConfig.seam_smoothing.sigma,
                 tiler=tiler,
             )
         else:

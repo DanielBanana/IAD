@@ -7,4 +7,4 @@ test_split_mode: "none" # none, from_dir, synthetic, train_data
 test_split_ratio: 0.0
 val_split_mode: "none" # none, same_as_text, from_train, from_test, synthetic (from train_data)
 val_split_ratio: 0.0 # not used if same_as_text
-accelerator: "mps"  # Also tried cpu, gpu, auto
+accelerator: "auto"  # Also tried cpu, gpu, auto

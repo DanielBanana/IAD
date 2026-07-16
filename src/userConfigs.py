@@ -7,6 +7,8 @@ import numpy as np
 import torchvision.transforms.v2 as T
 from anomalib.metrics import Evaluator
 from anomalib.pre_processing import PreProcessor
+from anomalib.data.utils.split import ValSplitMode, TestSplitMode
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, ThresholdingStage
 from tiling.post_processor import AOIPostProcessor
 from setup import define_metrics, create_model
 from numpy.typing import NDArray
@@ -14,14 +16,42 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from enum import Enum
 from cv2.typing import MatLike
+import datetime
+from anomalib.data import PredictDataset
+from utils import find_first_file, exclude_from_logger, getVisualizer, VisualizerType
+
+from data.anomaly_datasets import importDataset, exportDataset, FODataModule, FODataset, importPredictDataset
+
+
+
+# FIFTYONE
+import fiftyone.core.dataset as fod
+import fiftyone as fo
+import fiftyone.zoo as foz # zoo datasets and models
+import fiftyone.brain as fob # ML methods
+from fiftyone import ViewField as F # helper for defining views
+from fiftyone import DatasetView
+import logging
 
 from typing import Generic, TypeVar
 
 import uuid
 
+logger = logging.getLogger(__name__)
+
+import platform
+import torch
+
+def get_device():
+    if platform.system() == "Darwin" and torch.backends.mps.is_available():
+        return "mps"
+    elif torch.cuda.is_available():
+        return "cuda"
+    else:
+        return "cpu"
+
 def generate_unique_id() -> str:
     return str(uuid.uuid4())
-
 
 def load_transform_from_yaml(config_path: Path):
     with open(config_path, "r") as f:
@@ -36,8 +66,8 @@ def load_transform_from_yaml(config_path: Path):
 
     return T.Compose(transform_list)
 
-
 def load_metrics_from_yaml(config_path: Path) -> tuple[List[Any], List[Any]]:
+    logger.info(f"Loading metrics from {config_path}")
     with open(config_path, "r") as f:
         config: Dict[str, List[Dict[str, Any]]] = yaml.safe_load(f)
 
@@ -59,6 +89,9 @@ def load_metrics_from_yaml(config_path: Path) -> tuple[List[Any], List[Any]]:
 
     val_metrics: List[Any] = instantiate_metrics(config.get("val_metrics", []))
     test_metrics: List[Any] = instantiate_metrics(config.get("test_metrics", []))
+    logger.info(f"Loaded val_metrics: {val_metrics}")
+    logger.info(f"Loaded test_metrics: {test_metrics}")
+
     return val_metrics, test_metrics
 
 
@@ -68,6 +101,7 @@ def get_default_evaluator() -> Evaluator:
 
 
 def resolve_config_path(path_str: str, model_yaml_path: Path, config_dir: Optional[Path] = None) -> Path:
+    logger.info(f"Resolving config path: {path_str}; config_dir: {config_dir}")
     path = Path(path_str)
     if path.is_absolute():
         return path
@@ -85,6 +119,7 @@ def resolve_config_path(path_str: str, model_yaml_path: Path, config_dir: Option
 
     for candidate in candidates:
         if candidate.exists():
+            logger.info(f"Success; Returning {candidate.resolve()}")
             return candidate.resolve()
 
     raise FileNotFoundError(
@@ -93,6 +128,7 @@ def resolve_config_path(path_str: str, model_yaml_path: Path, config_dir: Option
 
 
 def copy_file_to_dir(source_path: Path, copy_dir: Path, base_dir: Optional[Path] = None) -> Path:
+    logger.info(f"Trying to copy files from {source_path} to {copy_dir}")
     try:
         relative_path = source_path.relative_to(base_dir) if base_dir is not None else source_path.name
     except Exception:
@@ -101,6 +137,7 @@ def copy_file_to_dir(source_path: Path, copy_dir: Path, base_dir: Optional[Path]
     destination = copy_dir / relative_path
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, destination)
+    logger.info(f"Success!; Copied to {destination}")
     return destination
 
 
@@ -149,7 +186,8 @@ def parse_model_init_args(
     model_yaml_path: Path,
     config_dir: Optional[Path] = None,
     copy_dir: Optional[Path] = None,
-) -> tuple[Dict[str, Any], Optional[Path], Optional[Path], Optional[Path]]:
+) -> tuple[str, Dict[str, Any], Optional[Path], Optional[Path], Optional[Path]]:
+    logger.info(f"Parsing model init_args from {model_yaml_path}" + f"; Copying to {copy_dir}" if copy_dir is not None else "")
     with open(model_yaml_path, "r") as file:
         config = yaml.safe_load(file)
 
@@ -159,6 +197,8 @@ def parse_model_init_args(
     model_section = config.get("model")
     if not isinstance(model_section, dict):
         raise ValueError("YAML model config must contain a 'model' section as a mapping.")
+    
+    class_path:str = model_section.get("class_path", "")
 
     init_args = dict(model_section.get("init_args", {}))
     if not isinstance(init_args, dict):
@@ -185,8 +225,32 @@ def parse_model_init_args(
         if evaluator_path is not None:
             copy_file_to_dir(evaluator_path, copy_dir, base_dir=config_dir)
 
-    return init_args, pre_processor_path, post_processor_path, evaluator_path
+    logger.info(f"Successfully parsed config: class_path:{class_path}, init_args: {init_args}")
 
+    return class_path, init_args, pre_processor_path, post_processor_path, evaluator_path
+
+def loadModelConfig(configDir:Path, modelConfigPath:Path, copyDir:Path|None=None, vtype:VisualizerType|None=None, fieldSize:Tuple[int,int]|None=None) -> Tuple[Dict[str,Any], Path|None, Path|None, Path|None]:
+    """Load YAML model config and resolve engine config references."""
+    class_path, init_args, pre_processor_path, post_processor_path, evaluator_path = parse_model_init_args(
+        modelConfigPath,
+        config_dir=configDir,
+        copy_dir=copyDir,
+    )
+
+    if vtype is None:
+        init_args["visualizer"] = False
+    else:
+        if fieldSize is None:
+            raise ValueError(f"If Visualiser is to be created a fieldSize needs to be given; {fieldSize} not allowed")
+        init_args["visualizer"] = getVisualizer(vtype=vtype, fieldSize=fieldSize)
+
+    with open(modelConfigPath, 'r') as f:
+        model_config = yaml.safe_load(f)
+
+    model_config = dict(model_config)
+    model_config["model"]["init_args"] = init_args
+
+    return model_config, pre_processor_path, post_processor_path, evaluator_path
 
 def resolve_product_config_path(path_str: str, product_yaml_path: Path, config_dir: Optional[Path] = None, subdir: Optional[str] = None) -> Path:
     if Path(path_str).is_absolute():
@@ -210,30 +274,7 @@ def resolve_product_config_path(path_str: str, product_yaml_path: Path, config_d
     )
 
 
-def load_dataset_config(config: Dict[str, Any], product_yaml_path: Path) -> "DatasetConfig":
-    if not isinstance(config, dict):
-        raise TypeError("dataset config must be a dict")
 
-    name = config.get("name")
-    category = config.get("category")
-    splits = config.get("split") or config.get("splits")
-    path_value = config.get("path")
-
-    if not isinstance(name, str) or not name:
-        raise ValueError("dataset.name must be a non-empty string")
-    if not isinstance(category, str) or not category:
-        raise ValueError("dataset.category must be a non-empty string")
-    if not isinstance(splits, list) or not all(isinstance(item, str) for item in splits):
-        raise ValueError("dataset.split must be a list of strings")
-
-    if isinstance(path_value, str) and path_value:
-        dataset_path = Path(path_value)
-        if not dataset_path.is_absolute():
-            dataset_path = (product_yaml_path.parent / dataset_path).resolve()
-    else:
-        dataset_path = (Path("datasets") / name).resolve()
-
-    return DatasetConfig(name=name, category=category, splits=tuple(splits), path=dataset_path)
 
 
 
@@ -263,56 +304,329 @@ class DatasetConfig:
     splits: Tuple[str,str]|Tuple[str]
     path: Path
 
+    @classmethod
+    def load_dataset_config(cls, config: Dict[str, Any], product_yaml_path: Path) -> "DatasetConfig":
+        name = config.get("name")
+        category = config.get("category")
+        splits = config.get("split") or config.get("splits")
+        path_value = config.get("path")
+
+        if not isinstance(name, str) or not name:
+            raise ValueError("dataset.name must be a non-empty string")
+        if not isinstance(category, str) or not category:
+            raise ValueError("dataset.category must be a non-empty string")
+        if not isinstance(splits, list) or not all(isinstance(item, str) for item in splits):
+            raise ValueError("dataset.split must be a list of strings")
+
+        if isinstance(path_value, str) and path_value:
+            dataset_path = Path(path_value)
+            if not dataset_path.is_absolute():
+                dataset_path = (product_yaml_path.parent / dataset_path).resolve()
+        else:
+            dataset_path = (Path("datasets") / name).resolve()
+
+        return DatasetConfig(name=name, category=category, splits=tuple(splits), path=dataset_path)
+
 @dataclass
-class DataModuleParams:
+class DataModuleConfig:
+    val_split_mode: ValSplitMode
+    test_split_mode: TestSplitMode
     train_batch_size: Optional[int] = None
     train_augmentations: Optional[List[Any]] = None
     val_augmentations: Optional[List[Any]] = None
     test_augmentations: Optional[List[Any]] = None
     augmentations: Optional[List[Any]] = None
-    val_split_mode: Optional[str] = None
     val_split_ratio: Optional[float] = None
-    test_split_mode: Optional[str] = None
     test_split_ratio: Optional[float] = None
     seed: Optional[int] = None
 
-    @classmethod
-    def extract_datamodule_params(cls, config: Dict[str, Any]) -> "DataModuleParams":
-        """Create a DataModuleParams instance from a dictionary."""
-        if not isinstance(config, dict):
-            raise TypeError("config must be a dict")
+    def to_dict(self) -> Dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
+    @classmethod
+    def extract_datamodule_config(cls, config: Dict[str, Any]) -> "DataModuleConfig":
+        """Create a DataModuleConfig instance from a dictionary."""
         return cls(
             train_batch_size=config.get("train_batch_size"),
             train_augmentations=config.get("train_augmentations"),
             val_augmentations=config.get("val_augmentations"),
             test_augmentations=config.get("test_augmentations"),
             augmentations=config.get("augmentations"),
-            val_split_mode=config.get("val_split_mode"),
+            val_split_mode=ValSplitMode(config.get("val_split_mode", ValSplitMode.NONE)),
             val_split_ratio=config.get("val_split_ratio"),
-            test_split_mode=config.get("test_split_mode"),
+            test_split_mode=TestSplitMode(config.get("test_split_mode", TestSplitMode.NONE)),
             test_split_ratio=config.get("test_split_ratio"),
             seed=config.get("seed"),
         )
 
     @classmethod
-    def load_datamodule_params_from_yaml(cls, yaml_path: str) -> "DataModuleParams":
-        """Load DataModuleParams from a YAML file."""
+    def load_datamodule_config_from_yaml(cls, yaml_path: Path) -> "DataModuleConfig":
+        """Load DataModuleConfig from a YAML file."""
         with open(yaml_path, 'r') as file:
             config = yaml.safe_load(file)
-        return cls.extract_datamodule_params(config)
+        return cls.extract_datamodule_config(config)
 
-class NormalizationStage(Enum):
-    TILE = "tile"
-    IMAGE = "image"
-    NONE = "none"
+def clipEmbedding(dataset:fod.Dataset):
+    model = foz.load_zoo_model(
+        "clip-vit-base32-torch"
+    )  # load the CLIP model from the zoo
 
-class ThresholdingStage(Enum):
-    TILE = "tile"
-    IMAGE = "image"
+    # Compute embeddings for the dataset
+    dataset.compute_embeddings(
+        model=model, embeddings_field="clip_embeddings", batch_size=64
+    )
+
+    # Dimensionality reduction using UMAP on the embeddings
+    fob.compute_visualization(
+        dataset, embeddings="clip_embeddings", method="umap", brain_key="clip_vis"
+    )
+
+def resnetEmbedding(dataset:fod.Dataset):
+    model = foz.load_zoo_model(
+        "resnet50-imagenet-torch"
+    )  # load the ResNet50 model from the zoo
+
+    # Compute embeddings for the dataset — this might take a while on a CPU
+    dataset.compute_embeddings(model=model, embeddings_field="resnet50_embeddings")
+
+    # Dimensionality reduction using UMAP on the embeddings
+    fob.compute_visualization(
+        dataset,
+        embeddings="resnet50_embeddings",
+        method="umap",
+        brain_key="resnet50_vis",
+    )
+
+@dataclass
+class DatasetSession:
+    """Manages FiftyOne dataset viewing and session lifecycle.
+    Separate concern: how data is explored, not how models interact with it.
+    """
+    FO_DatasetOriginal: fo.Dataset
+    FO_Dataset: fo.Dataset
+    datasetName: str
+    categories: List[str]
+    category: Optional[List[str]] = None
+    config: Optional[DatasetConfig] = None
+    # FO_DatasetView: Optional[fo.DatasetView] = None
+    AL_PredictDataset: Optional[PredictDataset] = None
+    currentSession: Optional[fo.Session] = None  # fo.Session
+
+    @classmethod
+    def loadDatasetFromConfig(cls, config:DatasetConfig, overwrite:bool=True, merge:bool=False, split:Optional[Tuple[str]]=None) -> "DatasetSession":
+        session = cls.loadDatasetFromDisk(datasetPath=config.path,
+                                          datasetName=config.name, 
+                                          overwrite=overwrite,
+                                          merge=merge,
+                                          split=config.splits if split is None else split)
+        session.config=config
+        return session  
+
+    @classmethod
+    def loadDatasetFromDatabase(cls, datasetName: str) -> "DatasetSession":
+        """Load a dataset from MongoDB and track it here."""
+        if fo.dataset_exists(datasetName):
+            FO_Dataset = fo.load_dataset(datasetName)
+
+            try:
+                session:DatasetSession = cls(datasetName=datasetName, categories=list(FO_Dataset.distinct("category.label")), FO_DatasetOriginal=FO_Dataset, FO_Dataset=FO_Dataset)
+            except:
+                logger.error(f"Could not create DatasetSession.")
+                raise ValueError
+            
+            logger.info(f"Loaded dataset '{datasetName}' from database!")
+            return session
+        else:
+            logger.error(f"Dataset '{datasetName}' does not exist in database")
+            raise FileNotFoundError()
+
+    @classmethod
+    def loadDatasetFromDisk(cls, datasetPath: Path, datasetName:str,  overwrite:bool=True, merge:bool=False, split:Tuple[str,...] = ("train", "test")) -> "DatasetSession":
+        """Load a dataset from a given path on the disk and give it a name for the Voxel51 MongoDB.
+        Existing dataset in the database can be overwritten or merged with.
+        
+
+        Arguments:
+            datasetPath -- directory where to find the dataset
+
+        Keyword Arguments:
+            datasetName -- Name of the dataset for the database (default: {""})
+            overwrite -- overwrite a potential dataset in the database with the same name? (default: {True})
+            merge -- merge with a potential dataset in the database with the same name? (default: {False})
+            split -- Does the data contain training, testing both or prediction data (default: {("train", "test")})
+        """
+        datasetSession: DatasetSession|None = None
+
+        AL_PredictDataset:Optional[PredictDataset] = None
+
+        if split == ("pred",):
+            FO_Dataset, AL_PredictDataset = importPredictDataset(datasetPath, name=datasetName, overwrite=overwrite)
+        else:
+            if overwrite and merge:
+                logger.info("Overwrite and merge should not both be true. Overwrite is ignored...")
+                overwrite = False
+
+            if not datasetPath.exists():
+                raise FileNotFoundError(f"Dataset {datasetPath} does not exit")
+            elif fo.dataset_exists(datasetName) and not overwrite and not merge:
+                logger.info(f"Dataset '{datasetName}' already exists in database")
+                logger.info("Loading from database")
+                datasetSession = cls.loadDatasetFromDatabase(datasetName=datasetName)  
+                FO_Dataset = datasetSession.FO_Dataset  
+            elif fo.dataset_exists(datasetName) and overwrite:
+                logger.info(f"Dataset '{datasetName}' already exists in database")
+                logger.info("Overwriting")
+                FO_Dataset, _ = importDataset(
+                    path=datasetPath,
+                    name=datasetName,
+                    overwrite=overwrite,
+                    split=split
+                )
+            elif fo.dataset_exists(datasetName) and merge:
+                logger.info(f"Dataset '{datasetName}' already exists in FiftyOne database")
+                logger.info(f"Importing '{datasetName}' dataset from disk")
+                now = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+                dataset, _ = importDataset(
+                    path=datasetPath,
+                    name=datasetName+"_"+str(now),
+                    overwrite=False,
+                    split=split
+                )
+                logger.info(f"Importing '{datasetName}' dataset from FiftyOne database")
+                FO_Dataset = fo.load_dataset(datasetName) # TODO Safety
+                logger.info(f"Merging both datasets")
+                FO_Dataset.merge_samples(dataset)
+            else:
+                logger.info(f"Loading {datasetName} dataset from disk")
+                FO_Dataset, _ = importDataset(
+                    path=datasetPath,
+                    name=datasetName,
+                    overwrite=overwrite,
+                    split=split
+                )
+
+        if datasetSession is not None:
+            return datasetSession
+        else:
+            if FO_Dataset is not None:
+                session = DatasetSession(datasetName=datasetName, FO_DatasetOriginal=FO_Dataset, FO_Dataset=FO_Dataset, AL_PredictDataset=AL_PredictDataset, categories=FO_Dataset.distinct("category.label"))
+                logger.info(f"There are {session.FO_Dataset.count()} images in the {datasetName} dataset.")
+                logger.info(f"There are {len(session.categories)} categorie(s) in the {datasetName} dataset.")
+                logger.info(session.categories)
+                # session.name = datasetName
+                return session
+            else:
+                logger.warning(f"Import was not successfull")
+                raise FileNotFoundError()
+
+    def select_category(self, category: str) -> fo.Dataset | None:
+        """Select a category and create a view."""
+        
+
+        if category == "all":
+            self.category = None
+            self.FO_DatasetView:fo.DatasetView = self.FO_Dataset.exists("file_path")
+        else:
+            if category not in (self.categories or []):
+                raise AttributeError(f"Category {category} not found! Available: {self.categories}")
+            self.category = category
+            self.FO_DatasetView:fo.DatasetView = self.FO_Dataset.filter_labels("category", F("label").is_in([category]))
+        
+        logger.info(f"Selected category: {self.category}, {len(self.FO_DatasetView)} images")
+
+        if self.FO_DatasetView is not None:
+            try:
+                FO_Dataset_:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+            except ValueError as e:
+                logger.error(e)
+                logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
+                fo.delete_dataset(f"{self.datasetName}-{self.category}")
+                FO_Dataset_:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+            finally:
+                if isinstance(FO_Dataset_, fo.Dataset):
+                    FO_Dataset = FO_Dataset_
+                else:
+                    raise ValueError("FO_Dataset_ is not bound. Check for problems with dataset/datasetView (category/product selection)")
+                self.FO_Dataset = FO_Dataset
+                return self.FO_Dataset
+        else:
+            return None
+
+        # return FO_Dataset
+
+    def launchSession(self) -> Any:
+        """Launch the FiftyOne app for exploration."""
+
+        # if self.FO_DatasetView is not None: # Category is set which generates a datasetview
+        #     # we make a separate dataset out of the View since some operations do not work on dataset views
+        #     try:
+        #         FO_Dataset_ = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+        #     except ValueError as e:
+        #         logger.error(e)
+        #         logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
+        #         fo.delete_dataset(f"{self.datasetName}-{self.category}")
+        #         FO_Dataset_ = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+        #     finally:
+        #         if isinstance(FO_Dataset_, fo.Dataset):
+        #             FO_Dataset = FO_Dataset_
+        #         else:
+        #             raise ValueError("FO_Dataset_ is not bound. Check for problems with dataset/datasetView (category/product selection)")
+        # else:
+        #     FO_Dataset = self.FO_Dataset
+
+        self.currentSession = fo.launch_app(self.FO_Dataset)
+        logger.info(f"Session: {self.currentSession.server_address}:{self.currentSession.server_port}")
+        return self.currentSession
+
+    def get_dataset_for_operation(self) -> fo.Dataset:
+        """Returns the dataset to use for training/eval: the view if a category is selected, else full dataset."""
+        if self.FO_DatasetView is not None:
+            return self.FO_DatasetView
+        if self.FO_Dataset is None:
+            raise AttributeError("No dataset loaded")
+        return self.FO_Dataset
+    
+    def setupDatamodule(self, datamoduleConfig:DataModuleConfig, outputPath:Path) -> FODataModule:
+        """Setup a datamodule from the dataset for running a model on the data
+
+        Arguments:
+            outputPath: Path
+
+        Returns:
+            _description_
+        """
+
+        if self.datasetName == "":
+            self.datasetName = "unnamedDataset"
+        datamodule = FODataModule(name=self.datasetName, samples=self.FO_Dataset, root=outputPath, **datamoduleConfig.to_dict())
+        datamodule.setup()
+        self.datamodule = datamodule
+        return self.datamodule
+    
+    def generateEmbedding(self) -> None:
+        """Generate an embedding of the dataset into a 2d space to visually inspect the data. Opens a voxel51 session
+
+        Raises:
+            AttributeError: Needs a dataset to be set
+        """
+
+        with exclude_from_logger():
+            clipEmbedding(self.FO_Dataset)
+        logger.info("Finished embedding computation.")
+        logger.info("Please reload the FiftyOne app to see the new visualizations.")
+        logger.info("Data already has embedding")
+        logger.info("You find the visualizations by clicking the '+' next to Samples and choosing Embeddings.")
+
+    def save(self) -> None:
+        """
+        Saves the current status of the dataset to the database
+        """
+
+        logger.info(f"Saving current state of the dataset {self.datasetName} to the database")
+        self.FO_Dataset.save()
 
 @dataclass 
-class SeamSmoothingParams:
+class SeamSmoothingConfig:
     apply: bool = True
     sigma: int = 2
     width: float = 0.1
@@ -322,9 +636,13 @@ class TilingPipelineConfig:
     image_size: Tuple[int, int]
     tile_size: Tuple[int, int]
     stride: Tuple[int, int]
+    root_dir:Optional[Path] = None
     normalization_stage: NormalizationStage = NormalizationStage.IMAGE
     thresholding_stage: ThresholdingStage = ThresholdingStage.IMAGE
-    seam_smoothing: SeamSmoothingParams = SeamSmoothingParams()
+    seam_smoothing: SeamSmoothingConfig = SeamSmoothingConfig()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
     @classmethod
     def _parse_enum(cls, enum_cls: type[Enum], value: Any, default: Enum) -> Enum:
@@ -341,16 +659,16 @@ class TilingPipelineConfig:
         raise ValueError(f"{name} must be a tuple/list of length 2")
 
     @classmethod
-    def _parse_seam_smoothing(cls, value: Any) -> SeamSmoothingParams:
-        if isinstance(value, SeamSmoothingParams):
+    def _parse_seam_smoothing(cls, value: Any) -> SeamSmoothingConfig:
+        if isinstance(value, SeamSmoothingConfig):
             return value
         if isinstance(value, dict):
-            return SeamSmoothingParams(
-                apply=bool(value.get("apply", True)),
-                sigma=int(value.get("sigma", 2)),
-                width=float(value.get("width", 0.1)),
+            return SeamSmoothingConfig(
+                apply=bool(value.get("apply", False)),
+                sigma=int(value.get("sigma", 1)),
+                width=float(value.get("width", 0.0)),
             )
-        raise TypeError("seam_smoothing must be a SeamSmoothingParams or a dict")
+        raise TypeError("seam_smoothing must be a SeamSmoothingConfig or a dict")
 
     @classmethod
     def extract_tiling_pipeline_params(cls, config: Dict[str, Any]) -> "TilingPipelineConfig":
@@ -362,9 +680,10 @@ class TilingPipelineConfig:
         if not isinstance(tiling, dict):
             raise TypeError("tiling config must be a dict")
 
-        seam_smoothing = config.get("SeamSmoothing", config.get("seam_smoothing", {}))
+        seam_smoothing = config.get("SeamSmoothing", config.get("seam_smoothing", None))
 
         return cls(
+            root_dir=config.get("root_dir", None),
             image_size=cls._parse_tuple(tiling.get("image_size"), "image_size"),
             tile_size=cls._parse_tuple(tiling.get("tile_size"), "tile_size"),
             stride=cls._parse_tuple(tiling.get("stride"), "stride"),
@@ -374,7 +693,7 @@ class TilingPipelineConfig:
         )
 
     @classmethod
-    def load_tiling_pipeline_config_from_yaml(cls, yaml_path: str) -> "TilingPipelineConfig":
+    def load_tiling_pipeline_config_from_yaml(cls, yaml_path: Path) -> "TilingPipelineConfig":
         """Load TilingPipelineConfig from a YAML file."""
         with open(yaml_path, 'r') as file:
             config = yaml.safe_load(file)
@@ -383,7 +702,6 @@ class TilingPipelineConfig:
 
 @dataclass
 class BaseModelConfig:
-    name: Optional[str] = None
     backbone: Optional[str] = None
     pre_trained: Optional[bool] = None
     pre_processor: Optional[Any] = True
@@ -393,8 +711,8 @@ class BaseModelConfig:
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "BaseModelConfig":
-        if not isinstance(config, dict):
-            raise TypeError("config must be a dict")
+        # if not isinstance(config, dict):
+        #     raise TypeError("config must be a dict")
 
         kwargs: Dict[str, Any] = {}
         for key in cls.__dataclass_fields__:
@@ -417,7 +735,7 @@ class BaseModelConfig:
         if config_dir is None:
             config_dir = model_yaml_path.parents[1] if len(model_yaml_path.parents) > 1 else model_yaml_path.parent
 
-        init_args, _, _, _ = parse_model_init_args(
+        class_path, init_args, _, _, _ = parse_model_init_args(
             model_yaml_path,
             config_dir=config_dir,
             copy_dir=copy_dir,
@@ -512,32 +830,78 @@ MODEL_CONFIG_CLASSES: Dict[str, type[BaseModelConfig]] = {
 @dataclass
 class ModelConfig:
     name: str
-    params: BaseModelConfig
+    config: BaseModelConfig
+    preProcessorPath: Optional[Path] = None
+    postProcessorPath: Optional[Path] = None
+    evaluatorPath: Optional[Path] = None
+
+    @classmethod
+    def from_yaml(
+        cls,
+        yaml_path: str | Path,
+        config_dir: Optional[Path] = None,
+        copy_dir: Optional[Path] = None,
+    ) -> "ModelConfig":
+        model_yaml_path = Path(yaml_path)
+        if config_dir is None:
+            config_dir = (
+                model_yaml_path.parents[1]
+                if len(model_yaml_path.parents) > 1
+                else model_yaml_path.parent
+            )
+
+        class_path, init_args, preProcessorPath, postProcessorPath, evaluatorPath = parse_model_init_args(
+            model_yaml_path,
+            config_dir=config_dir,
+            copy_dir=copy_dir,
+        )
+
+
+
+        # Requires "name" to be present in the YAML's init_args
+        # model_name = init_args.get("class_path")
+        if not class_path:
+            raise ValueError("YAML must contain a 'name' field")
+
+        model_cls = MODEL_CONFIG_CLASSES.get(class_path.lower())
+        if model_cls is None:
+            raise ValueError(
+                f"Unsupported model '{class_path}'. "
+                f"Supported: {', '.join(sorted(MODEL_CONFIG_CLASSES))}"
+            )
+
+        return cls(name=class_path,
+                   config=model_cls.from_dict(init_args),
+                   preProcessorPath=preProcessorPath,
+                   postProcessorPath=postProcessorPath,
+                   evaluatorPath=evaluatorPath)
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "ModelConfig":
-        if not isinstance(config, dict):
-            raise TypeError("config must be a dict")
+        # if not isinstance(config, dict):
+        #     raise TypeError("config must be a dict")
 
         model_name = config.get("name")
         if not isinstance(model_name, str) or not model_name:
             raise ValueError("model config requires a non-empty name")
 
-        params = config.get("params", {})
-        if not isinstance(params, dict):
-            raise TypeError("model params must be a dict")
+        config = config.get("config", {})
+        # if not isinstance(config, dict):
+        #     raise TypeError("model config must be a dict")
 
         model_cls = MODEL_CONFIG_CLASSES.get(model_name.lower())
         if model_cls is None:
             raise ValueError(f"Unsupported model '{model_name}'. Supported models: {', '.join(sorted(MODEL_CONFIG_CLASSES))}")
 
-        return cls(name=model_name, params=model_cls.from_dict(params))
+        return cls(name=model_name,
+                   config=model_cls.from_dict(config))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "name": self.name,
-            "params": self.params.to_dict(),
-        }
+        return self.config.to_dict()
+        # return {
+        #     "name": self.name,
+        #     "config": self.config.to_dict(),
+        # }
 
 
 @dataclass
@@ -640,10 +1004,13 @@ class TrainerConfig:
         return cls.from_dict(config)
 
     @classmethod
-    def load_trainer_config_from_yaml(cls, yaml_path: str) -> "TrainerConfig":
+    def load_trainer_config_from_yaml(cls, yaml_path: Path) -> "TrainerConfig":
         """Load TrainerConfig from a YAML file."""
         with open(yaml_path, 'r') as file:
-            config = yaml.safe_load(file)
+            config:dict[str,Any] = yaml.safe_load(file)
+        if "accelerator" in config.keys():
+            if config["accelerator"] == "auto":
+                config["accelerator"] = get_device()
         return cls.extract_trainer_config(config)
 
 
@@ -651,22 +1018,24 @@ class TrainerConfig:
 TModelConfig = TypeVar("TModelConfig", bound=BaseModelConfig)
 
 @dataclass
-class Product(Generic[TModelConfig]):
+class Product:
     name: str
     logFileName: str
-    modelParameters: TModelConfig
+    modelConfig: ModelConfig
+    modelName: str
     modelConfigPath: Path
     modelWeightsPath: Path
     modelTrainingDir: Path
     tilingPipelineConfig: TilingPipelineConfig
     trainerConfig: TrainerConfig
+    datamoduleConfig: DataModuleConfig
     inferencerConfig: TrainerConfig
     datasetConfig: DatasetConfig
     imageCrop: Optional[Tuple[int, int, int, int]] = None  # (x_min, y_min, x_max, y_max)
     id: str = generate_unique_id()
     enableTiling: bool = False
 
-def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[Path] = None) -> Product["BaseModelConfig"]:
+def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[Path] = None) -> Product:
     product_yaml_path = Path(product_yaml_path)
     with product_yaml_path.open("r", encoding="utf-8") as f:
         product_config = yaml.safe_load(f)
@@ -675,7 +1044,7 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
         raise TypeError("product YAML must contain a mapping at the top level")
 
     if config_dir is None:
-        config_dir = product_yaml_path.parent
+        config_dir = product_yaml_path.parent.parent
 
     product_name = product_config.get("product")
     if not isinstance(product_name, str) or not product_name:
@@ -697,35 +1066,37 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
         raise ValueError("model.config must be a non-empty string")
     model_config_path = resolve_product_config_path(model_config_name, product_yaml_path, config_dir, subdir="Models")
 
-    with model_config_path.open("r", encoding="utf-8") as f:
-        model_yaml = yaml.safe_load(f)
-    if not isinstance(model_yaml, dict):
-        raise TypeError("model YAML must contain a mapping at the top level")
+    # with model_config_path.open("r", encoding="utf-8") as f:
+    #     model_yaml = yaml.safe_load(f)
+    # if not isinstance(model_yaml, dict):
+    #     raise TypeError("model YAML must contain a mapping at the top level")
 
-    model_class_path = model_yaml.get("model", {}).get("class_path")
-    if not isinstance(model_class_path, str) or not model_class_path:
-        raise ValueError("model YAML must contain model.class_path")
+    # model_class_path = model_yaml.get("model", {}).get("class_path")
+    # if not isinstance(model_class_path, str) or not model_class_path:
+    #     raise ValueError("model YAML must contain model.class_path")
 
-    normalized_model_key = model_class_path.lower().replace("_", "")
-    model_cls = MODEL_CONFIG_CLASSES.get(normalized_model_key)
-    if model_cls is None:
-        raise ValueError(f"Unsupported model '{model_class_path}' in model YAML")
+    # normalized_model_key = model_class_path.lower().replace("_", "")
+    # model_cls = MODEL_CONFIG_CLASSES.get(normalized_model_key)
+    # if model_cls is None:
+    #     raise ValueError(f"Unsupported model '{model_class_path}' in model YAML")
 
-    model_parameters = model_cls.load_model_config_from_yaml(model_config_path, config_dir=config_dir)
+    modelConfig:ModelConfig = ModelConfig.from_yaml(model_config_path, config_dir=config_dir)
+
+    # modelConfig = model_cls.load_model_config_from_yaml(model_config_path, config_dir=config_dir)
 
     weights_path = model_section.get("weights_path")
     if weights_path is None:
         raise ValueError("model.weights_path must be provided")
     model_weights_path = Path(weights_path)
     if not model_weights_path.is_absolute():
-        model_weights_path = (product_yaml_path.parent / model_weights_path).resolve()
+        model_weights_path = model_weights_path.resolve()
 
     training_dir = model_section.get("trainingDir")
     if not isinstance(training_dir, str) or not training_dir:
         raise ValueError("model.trainingDir must be a non-empty string")
     model_training_dir = Path(training_dir)
     if not model_training_dir.is_absolute():
-        model_training_dir = (product_yaml_path.parent / model_training_dir).resolve()
+        model_training_dir = model_training_dir.resolve()
 
     tiling_section = product_config.get("tiling", {})
     if not isinstance(tiling_section, dict):
@@ -736,7 +1107,7 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
         if not isinstance(tiling_config_name, str) or not tiling_config_name:
             raise ValueError("tiling.config must be a non-empty string when tiling.enable is true")
         tiling_config_path = resolve_product_config_path(tiling_config_name, product_yaml_path, config_dir, subdir="Tiling")
-        tiling_pipeline_config = TilingPipelineConfig.load_tiling_pipeline_config_from_yaml(str(tiling_config_path))
+        tiling_pipeline_config = TilingPipelineConfig.load_tiling_pipeline_config_from_yaml(tiling_config_path)
     else:
         tiling_pipeline_config = TilingPipelineConfig(
             image_size=(0, 0),
@@ -752,6 +1123,7 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
         raise ValueError("trainer.config must be a non-empty string")
     trainer_config_path = resolve_product_config_path(trainer_config_name, product_yaml_path, config_dir, subdir="Trainer")
     trainer_config = TrainerConfig.load_trainer_config_from_yaml(trainer_config_path)
+    datamoduleConfig = DataModuleConfig.load_datamodule_config_from_yaml(trainer_config_path)
 
     inferencer_section = product_config.get("inferencer", {})
     if not isinstance(inferencer_section, dict):
@@ -762,21 +1134,21 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
     inferencer_config_path = resolve_product_config_path(inferencer_config_name, product_yaml_path, config_dir, subdir="Trainer")
     inferencer_config = TrainerConfig.load_trainer_config_from_yaml(inferencer_config_path)
 
-    dataset_config = load_dataset_config(product_config.get("dataset", {}), product_yaml_path)
+    datasetConfig = DatasetConfig.load_dataset_config(product_config.get("dataset", {}), product_yaml_path)
 
-    return Product[
-        BaseModelConfig
-    ](
+    return Product(
         name=product_name,
         logFileName=log_file_name,
-        modelParameters=model_parameters,
+        modelConfig=modelConfig,
+        modelName=modelConfig.name,
         modelConfigPath=model_config_path,
         modelWeightsPath=model_weights_path,
         modelTrainingDir=model_training_dir,
         tilingPipelineConfig=tiling_pipeline_config,
         trainerConfig=trainer_config,
+        datamoduleConfig=datamoduleConfig,
         inferencerConfig=inferencer_config,
-        datasetConfig=dataset_config,
+        datasetConfig=datasetConfig,
         enableTiling=enable_tiling,
     )
 
@@ -800,21 +1172,34 @@ if __name__ == "__main__":
     )
     print(dataset_config)
 
-    trainerConfig = TrainerConfig.load_trainer_config_from_yaml("configs/Trainer/Training_InpFormer.yaml")
-    print(trainerConfig)
+    trainerConfig = TrainerConfig.load_trainer_config_from_yaml(Path("configs/Trainer/Training_InpFormer.yaml"))
+    print(f"Trainerconfig {trainerConfig}")
+    print("################")
     from lightning.pytorch import Trainer
     trainer = Trainer(**trainerConfig.to_kwargs())
-    print(trainer)
+    print(f"Trainerconfig {trainer}")
 
-    tilingPipelineConfig = TilingPipelineConfig.load_tiling_pipeline_config_from_yaml("configs/Tiling/TiledEnsemble.yaml")
-    print(tilingPipelineConfig)
+    DMConfig = DataModuleConfig.load_datamodule_config_from_yaml(Path("configs/Trainer/Training_InpFormer.yaml"))
+    print(DMConfig)
 
-    inpFormerConfig = InpFormerConfig.load_model_config_from_yaml("configs/Models/InpFormer.yaml")
-    print(inpFormerConfig)
-    model = create_model("InpFormer", inpFormerConfig.to_dict())
+    # from tiling.tiled_ensemble import get_ensemble_engine, parse_trainer_kwargs, AOITiledEnsembleEngine
+    # engine:AOITiledEnsembleEngine = get_ensemble_engine((0,0), trainer.accelerator, 1, Path(trainer.default_root_dir), trainerConfig.to_kwargs())
+    # # tilingPipelineConfig = TilingPipelineConfig.load_tiling_pipeline_config_from_yaml("configs/Tiling/TiledEnsemble.yaml")
+    # # print(tilingPipelineConfig)
+
+    modelConfig = ModelConfig.from_yaml("configs/Models/InpFormer.yaml")
+    print(modelConfig)
+    model = create_model(modelConfig.name, modelConfig.to_dict())
     print(model)
 
+    # engine._setup_trainer(model)
+
+    # print(engine)
+
+
     product = load_product_from_yaml("configs/Products/cable.yaml")
+
+    print(product)
 
 
 

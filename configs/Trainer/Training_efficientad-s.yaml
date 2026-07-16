@@ -6,7 +6,7 @@ test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
 test_split_ratio: 0.2
 val_split_mode: "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
 val_split_ratio: 0.5 # not used if same_as_text
-accelerator: "mps"  # Also tried cpu, gpu, auto
+accelerator: "auto"  # Also tried cpu, gpu, auto
 callbacks:
   - class_path: lightning.pytorch.callbacks.EarlyStopping
     init_args:

@@ -22,12 +22,9 @@ from anomalib.visualization import ImageVisualizer
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 
 # OWN FILES
-from .configs import parse_model_init_args
-from .setup import define_metrics
-from .settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
-from .tiling.post_processor import AOIPostProcessor
-
-
+from setup import define_metrics
+from settings import DEFAULT_FIELDS_CONFIG, DEFAULT_OVERLAY_FIELDS_CONFIG, DEFAULT_TEXT_CONFIG
+from tiling.post_processor import AOIPostProcessor
 class VisualizerType(Enum):
     train = 0
     valNoGT = 1
@@ -80,29 +77,6 @@ def exclude_from_logger():
         yield
     finally:
         sys.stdout = original_stdout  # Restore logger stdout
-
-def loadModelConfig(configDir:Path, modelConfigPath:Path, copyDir:Path|None=None, vtype:VisualizerType|None=None, fieldSize:Tuple[int,int]|None=None) -> Tuple[Dict[str,Any], Path|None, Path|None, Path|None]:
-    """Load YAML model config and resolve engine config references."""
-    init_args, pre_processor_path, post_processor_path, evaluator_path = parse_model_init_args(
-        modelConfigPath,
-        config_dir=configDir,
-        copy_dir=copyDir,
-    )
-
-    if vtype is None:
-        init_args["visualizer"] = False
-    else:
-        if fieldSize is None:
-            raise ValueError(f"If Visualiser is to be created a fieldSize needs to be given; {fieldSize} not allowed")
-        init_args["visualizer"] = getVisualizer(vtype=vtype, fieldSize=fieldSize)
-
-    with open(modelConfigPath, 'r') as f:
-        model_config = yaml.safe_load(f)
-
-    model_config = dict(model_config)
-    model_config["model"]["init_args"] = init_args
-
-    return model_config, pre_processor_path, post_processor_path, evaluator_path
 
 def load_transform_from_yaml(configPath:Path):
     with open(configPath, "r") as f:
