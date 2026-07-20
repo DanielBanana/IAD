@@ -11,6 +11,7 @@ from anomalib.data.utils.split import ValSplitMode, TestSplitMode
 from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, ThresholdingStage
 from tiling.post_processor import AOIPostProcessor
 from setup import define_metrics, create_model
+from run_registry import resolve_run_dir
 from numpy.typing import NDArray
 from typing import Any, Dict, List, Optional, Tuple
 import yaml
@@ -341,7 +342,15 @@ class DataModuleConfig:
     seed: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {key: value for key, value in asdict(self).items() if value is not None}
+        d:Dict[str,Any] = {}
+        for k,v in asdict(self).items():
+            if v is None:
+                continue
+            if isinstance(v,Enum):
+                d[k] = v.value
+            else:
+                d[k] = v
+        return d
 
     @classmethod
     def extract_datamodule_config(cls, config: Dict[str, Any]) -> "DataModuleConfig":
@@ -642,7 +651,15 @@ class TilingPipelineConfig:
     seam_smoothing: SeamSmoothingConfig = SeamSmoothingConfig()
 
     def to_dict(self) -> Dict[str, Any]:
-        return {key: value for key, value in asdict(self).items() if value is not None}
+        d:Dict[str,Any] = {}
+        for k,v in asdict(self).items():
+            if v is None:
+                continue
+            if isinstance(v,Enum):
+                d[k] = v.value
+            else:
+                d[k] = v
+        return d
 
     @classmethod
     def _parse_enum(cls, enum_cls: type[Enum], value: Any, default: Enum) -> Enum:
@@ -668,7 +685,7 @@ class TilingPipelineConfig:
                 sigma=int(value.get("sigma", 1)),
                 width=float(value.get("width", 0.0)),
             )
-        raise TypeError("seam_smoothing must be a SeamSmoothingConfig or a dict")
+        raise TypeError(f"seam_smoothing must be a SeamSmoothingConfig or a dict. Instead got {type(value)}")
 
     @classmethod
     def extract_tiling_pipeline_params(cls, config: Dict[str, Any]) -> "TilingPipelineConfig":
@@ -676,11 +693,18 @@ class TilingPipelineConfig:
         if not isinstance(config, dict):
             raise TypeError("config must be a dict")
 
-        tiling = config.get("tiling", {}) or {}
+        tiling:Dict[str,Any]|None = config.get("tiling")
         if not isinstance(tiling, dict):
             raise TypeError("tiling config must be a dict")
 
-        seam_smoothing = config.get("SeamSmoothing", config.get("seam_smoothing", None))
+        seam_smoothing:Optional[Dict[str,Any]] = tiling.get("SeamSmoothing", tiling.get("seam_smoothing", None))
+        if seam_smoothing is None:
+            Warning("Seem smoothing has not been found in manifest.yaml")
+            seam_smoothing = {
+                "apply" : True,
+                "sigma" : 2,
+                "width" : 0.1,
+            }
 
         return cls(
             root_dir=config.get("root_dir", None),
@@ -704,10 +728,10 @@ class TilingPipelineConfig:
 class BaseModelConfig:
     backbone: Optional[str] = None
     pre_trained: Optional[bool] = None
-    pre_processor: Optional[Any] = True
-    post_processor: Optional[Any] = True
-    evaluator: Optional[Any] = True
-    visualizer: Optional[Any] = True
+    pre_processor: Optional[Any] = False
+    post_processor: Optional[Any] = False
+    evaluator: Optional[Any] = False
+    visualizer: Optional[Any] = False
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "BaseModelConfig":
@@ -1022,21 +1046,65 @@ class Product:
     name: str
     logFileName: str
     modelConfig: ModelConfig
-    modelName: str
     modelConfigPath: Path
-    modelWeightsPath: Path
-    modelTrainingDir: Path
+    modelTrainingDir: Optional[Path]
     tilingPipelineConfig: TilingPipelineConfig
+    tilingConfigPath:Optional[Path]
     trainerConfig: TrainerConfig
+    trainerConfigPath: Path
     datamoduleConfig: DataModuleConfig
     inferencerConfig: TrainerConfig
+    inferencerConfigPath: Path
     datasetConfig: DatasetConfig
+    datasetPath:Path
     imageCrop: Optional[Tuple[int, int, int, int]] = None  # (x_min, y_min, x_max, y_max)
-    id: str = generate_unique_id()
-    enableTiling: bool = False
+    # id: str = generate_unique_id()
+    enableTiling: bool = True
+    selection: str = "latest"  # how modelWeightsPath/modelTrainingDir were picked when not pinned in the YAML: "latest" or "best"
 
-def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[Path] = None) -> Product:
-    product_yaml_path = Path(product_yaml_path)
+    def __str__(self) -> str:
+        string: str = ""
+        for k,v in self.__dict__.items():
+            string += f"{k}: {v}\n"
+        return string
+
+    def refresh_training_dir(self, baseOutputDir: Path) -> Optional[Path]:
+        """
+        Re-resolve modelTrainingDir against the current state of `baseOutputDir`,
+        e.g. after a train()/eval() call may have changed which run counts as
+        "latest"/"best". Only re-runs the resolution lookup - no config YAML is
+        re-parsed and no model is rebuilt. Updates self.modelTrainingDir in place.
+
+        Parameters
+        ----------
+        baseOutputDir : Path
+            Root results directory to search for runs (e.g. manager.baseOutputDir)
+
+        Returns
+        -------
+        _name_ : Optional[Path]
+            The freshly resolved training directory, or None if no complete run
+            for this product/model/selection exists (yet).
+        """
+        try:
+            resolved = resolve_run_dir(
+                baseOutputDir=Path(baseOutputDir),
+                category=self.datasetConfig.category,
+                modelName=self.modelConfig.name,
+                selection=self.selection,
+            )
+        except FileNotFoundError:
+            logger.info(
+                f"refresh_training_dir: no complete '{self.selection}' run found for "
+                f"{self.modelConfig.name}/{self.datasetConfig.category} under {baseOutputDir}"
+            )
+            resolved = None
+
+        self.modelTrainingDir = resolved
+        return resolved
+
+
+def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = None, baseOutputDir: Optional[Path] = None) -> Product:
     with product_yaml_path.open("r", encoding="utf-8") as f:
         product_config = yaml.safe_load(f)
 
@@ -1045,8 +1113,9 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
 
     if config_dir is None:
         config_dir = product_yaml_path.parent.parent
+        logger.info(f"Config dir not given for loadProductFromYaml. Choosing the double parent directory of the product.yaml: {config_dir}.")
 
-    product_name = product_config.get("product")
+    product_name:str = product_config.get("product")
     if not isinstance(product_name, str) or not product_name:
         raise ValueError("product field must be a non-empty string")
 
@@ -1083,20 +1152,45 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
     modelConfig:ModelConfig = ModelConfig.from_yaml(model_config_path, config_dir=config_dir)
 
     # modelConfig = model_cls.load_model_config_from_yaml(model_config_path, config_dir=config_dir)
+    dataset_section = product_config.get("dataset", None)
 
-    weights_path = model_section.get("weights_path")
-    if weights_path is None:
-        raise ValueError("model.weights_path must be provided")
-    model_weights_path = Path(weights_path)
-    if not model_weights_path.is_absolute():
-        model_weights_path = model_weights_path.resolve()
+    if dataset_section is None:
+        raise AttributeError("No dataset section found in product yaml.")
+    category = str(dataset_section.get("category", None)) if isinstance(dataset_section, dict) else None
 
-    training_dir = model_section.get("trainingDir")
-    if not isinstance(training_dir, str) or not training_dir:
-        raise ValueError("model.trainingDir must be a non-empty string")
-    model_training_dir = Path(training_dir)
-    if not model_training_dir.is_absolute():
-        model_training_dir = model_training_dir.resolve()
+    selection = model_section.get("selection", "latest")
+    if selection not in ("latest", "best"):
+        raise ValueError(f"model.selection must be 'latest' or 'best', got {selection!r}")
+
+    training_dir = model_section.get("trainingDir", None)
+    if training_dir is None:
+        if baseOutputDir is None:
+            raise ValueError(
+                "trainingDir is not set in the product and baseOutputDir is not given to loadProductFromYaml function."
+                "trainingDir must be given explicitly, or baseOutputDir must be given so the "
+                f"'{selection}' run can be resolved automatically"
+            )
+        training_dir:Path|None = resolve_run_dir(
+            baseOutputDir=Path(baseOutputDir),
+            category=category,
+            modelName=modelConfig.name,
+            selection=selection,
+        )
+
+    # if weights_path
+    # model_weights_path = Path(weights_path)
+    # if not model_weights_path.is_absolute():
+    #     model_weights_path = model_weights_path.resolve()
+
+    model_training_dir:Path|None
+    if training_dir is not None:
+        model_training_dir = Path(training_dir)
+        if not model_training_dir.is_absolute():
+            model_training_dir = model_training_dir.resolve()
+    else:
+        print("No training directory found. Either because it is not given and no dir could be found automatically or because given one does not exist.")
+        logger.info("No training directory found. Either because it is not given and no dir could be found automatically or because given one does not exist.")
+        model_training_dir = None
 
     tiling_section = product_config.get("tiling", {})
     if not isinstance(tiling_section, dict):
@@ -1114,6 +1208,7 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
             tile_size=(0, 0),
             stride=(0, 0),
         )
+        tiling_config_path = None
 
     trainer_section = product_config.get("trainer", {})
     if not isinstance(trainer_section, dict):
@@ -1124,32 +1219,40 @@ def load_product_from_yaml(product_yaml_path: str | Path, config_dir: Optional[P
     trainer_config_path = resolve_product_config_path(trainer_config_name, product_yaml_path, config_dir, subdir="Trainer")
     trainer_config = TrainerConfig.load_trainer_config_from_yaml(trainer_config_path)
     datamoduleConfig = DataModuleConfig.load_datamodule_config_from_yaml(trainer_config_path)
+    datasetConfig = DatasetConfig.load_dataset_config(dataset_section, product_yaml_path)
+    datasetPath = datasetConfig.path
 
-    inferencer_section = product_config.get("inferencer", {})
-    if not isinstance(inferencer_section, dict):
-        raise TypeError("inferencer config must be a dict")
-    inferencer_config_name = inferencer_section.get("config")
-    if not isinstance(inferencer_config_name, str) or not inferencer_config_name:
-        raise ValueError("inferencer.config must be a non-empty string")
-    inferencer_config_path = resolve_product_config_path(inferencer_config_name, product_yaml_path, config_dir, subdir="Trainer")
-    inferencer_config = TrainerConfig.load_trainer_config_from_yaml(inferencer_config_path)
+    inferencer_section = product_config.get("inferencer", None)
+    if inferencer_section is None:
+        raise ValueError("Need Inferencer for product. add `inferencer` section with path to `inferencer.yaml`")
+    else:
+        if not isinstance(inferencer_section, dict):
+            # logger.warning("Inferencer section given but section is not a dict.")
+            raise TypeError("inferencer config must be a dict")
+        inferencer_config_name = inferencer_section.get("config")
+        if not isinstance(inferencer_config_name, str) or not inferencer_config_name:
+            raise ValueError("inferencer.config must be a non-empty string")
+        inferencer_config_path = resolve_product_config_path(inferencer_config_name, product_yaml_path, config_dir, subdir="Trainer")
+        inferencer_config = TrainerConfig.load_trainer_config_from_yaml(inferencer_config_path)
 
-    datasetConfig = DatasetConfig.load_dataset_config(product_config.get("dataset", {}), product_yaml_path)
 
     return Product(
         name=product_name,
         logFileName=log_file_name,
         modelConfig=modelConfig,
-        modelName=modelConfig.name,
         modelConfigPath=model_config_path,
-        modelWeightsPath=model_weights_path,
         modelTrainingDir=model_training_dir,
         tilingPipelineConfig=tiling_pipeline_config,
+        tilingConfigPath=tiling_config_path,
         trainerConfig=trainer_config,
+        trainerConfigPath=trainer_config_path,
         datamoduleConfig=datamoduleConfig,
         inferencerConfig=inferencer_config,
+        inferencerConfigPath=inferencer_config_path,
         datasetConfig=datasetConfig,
+        datasetPath=datasetPath,
         enableTiling=enable_tiling,
+        selection=selection,
     )
 
 
@@ -1197,7 +1300,7 @@ if __name__ == "__main__":
     # print(engine)
 
 
-    product = load_product_from_yaml("configs/Products/cable.yaml")
+    product = loadProductFromYaml("configs/Products/cable.yaml")
 
     print(product)
 

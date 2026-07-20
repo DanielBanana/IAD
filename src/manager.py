@@ -16,8 +16,13 @@ from logging.config import dictConfig
 from enum import IntFlag, auto
 from pathlib import Path
 from typing import Any, List, Tuple, Optional, Dict, Type
-
+from dataclasses import dataclass
+from typing import Optional
 from jsonargparse import ArgumentParser, Namespace
+import hashlib
+import json
+import uuid
+from datetime import datetime
 
 # FIFTYONE
 import fiftyone.core.dataset as fod
@@ -26,7 +31,6 @@ import fiftyone.zoo as foz # zoo datasets and models
 import fiftyone.brain as fob # ML methods
 from fiftyone import ViewField as F # helper for defining views
 from fiftyone import DatasetView
-
 
 # ANOMALIB
 from anomalib.deploy import ExportType
@@ -57,11 +61,12 @@ from userConfigs import (
     ModelConfig, 
     BaseModelConfig, 
     TilingPipelineConfig, 
-    Product, load_product_from_yaml, 
+    Product, loadProductFromYaml, 
     DatasetSession, 
     loadModelConfig,
     TilingPipelineConfig
 )
+from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles
 
 os.environ["TRUST_REMOTE_CODE"] = "1"
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm.models.layers")
@@ -73,6 +78,7 @@ def resolve_output_dir(
     baseOutputDir: Path,
     datasetName: str,
     modelName: str,
+    runId: str,
     category: Optional[str] = None,
     tiling: bool = True,
 ) -> Path:
@@ -104,14 +110,14 @@ def resolve_output_dir(
     path = path / modelName
     if tiling:
         path = path / "tiled"
-    return path
+    return path / "runs" / runId
 
 
 def resolve_checkpoint_paths(
     trainingDir: Path,
-    ckptFileName: str = "best",
-    ckptSuffix: str = ".ckpt",
-) -> Tuple[Path, Path]:
+    # ckptFileName: str = "best",
+    # ckptSuffix: str = ".ckpt",
+) -> Path:
     """
     Where checkpoints live *within* a given (already-resolved) training run directory.
 
@@ -135,16 +141,16 @@ def resolve_checkpoint_paths(
         File if not tiled checkpoints; if tiled just use the dir because there are multiple files needed
     """
     ckptDir = trainingDir / "checkpoints"
-    ckptPath = ckptDir / (ckptFileName + ckptSuffix)
-    return ckptDir, ckptPath
+    return ckptDir
+    # ckptPath = ckptDir / (ckptFileName + ckptSuffix)
+    # return ckptDir, ckptPath
 
-from dataclasses import dataclass
 @dataclass
 class RunContext:
     runName: str
     outputDir: Path
-    ckptDir: Path
-    ckptPath: Path
+    # ckptDir: Path
+    # ckptPath: Path
 
 class ManagerError(Exception):
     """Base class for all AnomalyDetectionManager errors."""
@@ -179,8 +185,6 @@ class ManagerState(IntFlag):
 # Create the general logger
 logger = logging.getLogger(__name__)
 
-from dataclasses import dataclass
-from typing import Optional
 class AnomalyDetectionManager:
 
     # Each action declares what state it needs. Single source of truth —
@@ -189,7 +193,7 @@ class AnomalyDetectionManager:
         "setupTiling": ManagerState.MODEL_LOADED,
         "train": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED,
         "eval": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED | ManagerState.CHECKPOINT_AVAILABLE,
-        "inference": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED | ManagerState.CHECKPOINT_AVAILABLE,
+        "inference": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED | ManagerState.CHECKPOINT_AVAILABLE
     }
 
     _STATE_DESCRIPTIONS: Dict[ManagerState, str] = {
@@ -233,14 +237,14 @@ class AnomalyDetectionManager:
         self.configDir:Path = configDir
 
         self.ckptDir: Optional[Path] = None
-        self.ckptPath: Optional[Path] = None
-        self.ckptFileName:str = "best"
-        self.ckptSuffix:str = ".ckpt"
+        # self.ckptPath: Optional[Path] = None
+        # self.ckptFileName:str = "best"
+        # self.ckptSuffix:str = ".ckpt"
 
         self.model: Optional[AnomalibModule] = None
         self.modelConfig: Optional[ModelConfig] = None
         self.modelConfigPath: Optional[Path] = None
-        self.modelWeightsPath: Optional[Path] = None
+        self.modelTrainingDir: Optional[Path] = None
         # self.modelCallbacks: Dict[str, Callback]
 
         # self.engine: Optional[Engine] = None
@@ -253,9 +257,9 @@ class AnomalyDetectionManager:
         self.tilingPipelineConfig: Optional[TilingPipelineConfig] = None
         self.isTilingSetup = False
 
-        self.version:int = 0
-        self.versionName:str = "version"
-        self.runDir:Path|None = None
+        # self.version:int = 0
+        # self.versionName:str = "version"
+        # self.runDir:Path|None = None
 
         self.datasetSession: Optional[DatasetSession] = None
   
@@ -294,8 +298,9 @@ class AnomalyDetectionManager:
         dateAndTime : str
             formated date and time string of the current time
         """
-        dateAndTime: str = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+        dateAndTime: str = datetime.now().strftime("%Y%m%d-%H%M")
         return dateAndTime
+
 
     def setupLogging(self, logDir: Optional[Path] = None, logConfigFile: Optional[Path] = None):
         """
@@ -309,6 +314,8 @@ class AnomalyDetectionManager:
         logConfigFile : Optional[Path] (optional)
             _description_. Default is `None`
         """
+
+
         if logDir is None:
             self.logDir = self.outputDir / "logs"
         else:
@@ -316,9 +323,9 @@ class AnomalyDetectionManager:
 
         if not os.path.exists(self.logDir):
             os.makedirs(self.logDir)
-        else:
-            shutil.rmtree(self.logDir) # TODO Make this safer
-            os.makedirs(self.logDir)
+        # else:
+        #     shutil.rmtree(self.logDir) # TODO Make this safer
+        #     os.makedirs(self.logDir)
 
         if logConfigFile is None:
             logConfigFile = self.configDir / "Logging" / "logging.yaml"
@@ -509,7 +516,13 @@ class AnomalyDetectionManager:
             missing=missing_descriptions,
         )
     
-    def generateModel(self, modelConfigPath: Optional[Path] = None, modelConfig: Optional[ModelConfig] = None) -> None:
+    def loadModelConfig(self, modelConfigPath: Path) -> ModelConfig:
+        modelConfig = ModelConfig.from_yaml(modelConfigPath)
+        self.modelConfigPath = modelConfigPath
+        self.modelConfig = modelConfig
+        return modelConfig
+    
+    def generateModel(self, modelConfig: ModelConfig) -> None:
         """
         Create a model for the manager to manage. Either from a config or a path to a config yaml-file.
 
@@ -527,22 +540,12 @@ class AnomalyDetectionManager:
         _name_ : ConfigError
             The model creation process failed for some reason.
         """
-        if modelConfigPath is None and modelConfig is None:
-            raise ConfigError("Need either modelConfigPath or modelConfig")
-        if modelConfigPath is not None and modelConfig is not None:
-            logger.warning("Both modelConfigPath and modelConfig given; ignoring modelConfig")
-            modelConfig = None
-
-        if modelConfigPath is not None:
-            modelConfig = ModelConfig.from_yaml(modelConfigPath)
 
         model = create_model(modelConfig.name, modelConfig.to_dict())
         if model is None:
             raise ConfigError(f"Model creation failed for config: {modelConfig}")
 
         self.model = model
-        self.modelConfigPath = modelConfigPath
-        self.modelConfig = modelConfig
         self.state |= ManagerState.MODEL_LOADED
         # loading a new model invalidates any previous training/tiling state
         self.state &= ~(ManagerState.TILING_CONFIGURED | ManagerState.TRAINED | ManagerState.CHECKPOINT_AVAILABLE)
@@ -572,70 +575,33 @@ class AnomalyDetectionManager:
         logger.info(f"Tiling configured: {tilingPipelineConfig}")
         return self.isTilingSetup
     
-    def copyFilesToPath(self, path:Path):
+    def _runConfigFiles(self) -> RunConfigFiles:
         """
-        To make it easier to understand how a model was trained copy all relevant files to the output folder.
-        Currently not used TODO Use the copy files mechanism?
+        The set of config files actually in use by this manager right now,
+        anchored to `self.configDir`. See `RunConfigFiles.copy_to` for how
+        these get laid out under a run directory.
 
-        Parameters
-        ----------
-        path : Path
-            Path to copy the files to
-
-        Raises
-        ------
-        _name_ : AttributeError
-            if the model config path is not available to the manager
+        Returns
+        -------
+        _name_ : RunConfigFiles
+            Config file paths currently tracked by the manager
         """
-        # If the configs should be copied create the folder and copy the general config  
-        # TODO Check which configs are available at the given folder  
-        if not path.exists():
-            path.mkdir(parents=True)
-
-        newEnginePath:Path = path / "Engine"
-        newModelPath:Path = path / "Models"
-        newTrainerPath:Path = path / "Trainer"
-        newTilingPath:Path = path / "Tiling"
-
-        if not newEnginePath.exists():
-            newEnginePath.mkdir(parents=True)
-        if not newModelPath.exists():
-            newModelPath.mkdir(parents=True)
-        if not newTrainerPath.exists():
-            newTrainerPath.mkdir(parents=True)
-        if not newTilingPath.exists():
-            newTilingPath.mkdir(parents=True)
-
-        if self.trainerConfigPath is not None:
-            _, trainerConfigFileName = os.path.split(self.trainerConfigPath)
-            shutil.copy2(self.trainerConfigPath, newTrainerPath / trainerConfigFileName)
-
-        # Copy the modelConfig file if possible
-        if self.modelConfigPath is not None:
-            _, modelConfigFileName = os.path.split(self.modelConfigPath)
-            shutil.copy2(self.modelConfigPath, newModelPath / modelConfigFileName)
-        else:
-            raise AttributeError(f"Model config path is empty. Load model before calling this function!")
-        
+        preProcessorPath = postProcessorPath = evaluatorPath = None
         if self.modelConfig is not None:
-            if self.modelConfig.preProcessorPath:
-                _, fileName = os.path.split(self.modelConfig.preProcessorPath)
-                shutil.copy2(self.modelConfig.preProcessorPath, newEnginePath / fileName)
-            if self.modelConfig.postProcessorPath is not None:
-                _, fileName = os.path.split(self.modelConfig.postProcessorPath)
-                shutil.copy2(self.modelConfig.postProcessorPath, newEnginePath / fileName)
-            if self.modelConfig.evaluatorPath is not None:
-                _, fileName = os.path.split(self.modelConfig.evaluatorPath)
-                shutil.copy2(self.modelConfig.evaluatorPath , newEnginePath / fileName)
-            # if self.visualizerPath is not None:
-            #     _, fileName = os.path.split(self.visualizerPath)
-            #     shutil.copy2(self.visualizerPath, newEnginePath / fileName)
+            preProcessorPath = self.modelConfig.preProcessorPath
+            postProcessorPath = self.modelConfig.postProcessorPath
+            evaluatorPath = self.modelConfig.evaluatorPath
 
-    def copyFilesToOutputPath(self):
-        """
-        Copy the config files needed for the manager to the current output folder
-        """
-        self.copyFilesToPath(self.outputDir)
+        return RunConfigFiles(
+            configDir=self.configDir,
+            modelConfigPath=self.modelConfigPath,
+            trainerConfigPath=self.trainerConfigPath,
+            tilingConfigPath=self.tilingConfigPath,
+            inferencerConfigPath=self.inferencerConfigPath,
+            preProcessorPath=preProcessorPath,
+            postProcessorPath=postProcessorPath,
+            evaluatorPath=evaluatorPath,
+        )
 
     @classmethod
     def loadProduct(cls, productConfigPath: Path, outputPath: Path, configDir: Path) -> Tuple["AnomalyDetectionManager", Product]:
@@ -656,22 +622,27 @@ class AnomalyDetectionManager:
         _name_ : Tuple[AnomalyDetectionManager, Product]
             A tuple of the created manager class and a product that contains all important information about the product.
         """
-        product = load_product_from_yaml(productConfigPath)
+        product = loadProductFromYaml(productConfigPath, config_dir=configDir, baseOutputDir=outputPath)
         manager = cls(outputDir=outputPath, configDir=configDir)
         manager.generateModel(modelConfig=product.modelConfig)
         manager.setupTiling(product.tilingPipelineConfig)
-
-        outputDir = resolve_output_dir(
-            baseOutputDir=manager.baseOutputDir, datasetName=product.datasetConfig.name,
-            modelName=product.modelConfig.name, category=product.datasetConfig.category, tiling=True,
-        )
-        manager.outputDir = outputDir
-        manager.ckptDir, manager.ckptPath = resolve_checkpoint_paths(outputDir, manager.ckptFileName, manager.ckptSuffix)
-        manager._apply_visualizer_output_dir(outputDir)
+        manager.tilingConfigPath = product.tilingConfigPath
+        manager.trainerConfigPath = product.trainerConfigPath
+        manager.modelConfigPath = product.modelConfigPath
+        manager.modelTrainingDir = product.modelTrainingDir
 
         # loadProduct points at a model/weights path that presumably already has a checkpoint
-        if product.modelWeightsPath.exists() or manager.ckptPath.exists():
-            manager.state |= ManagerState.CHECKPOINT_AVAILABLE | ManagerState.TRAINED
+        if manager.modelTrainingDir is not None:
+            manager.ckptDir = resolve_checkpoint_paths(manager.modelTrainingDir)
+            if manager.ckptDir.exists():
+                manager.state |= ManagerState.CHECKPOINT_AVAILABLE | ManagerState.TRAINED
+        manager._apply_visualizer_output_dir(outputPath)
+
+        # runID = generate_run_id
+        # outputDir = resolve_output_dir(
+        #     baseOutputDir=manager.baseOutputDir, datasetName=product.datasetConfig.name,
+        #     modelName=product.modelConfig.name, category=product.datasetConfig.category, tiling=True,
+        # )
 
         return manager, product
 
@@ -685,22 +656,22 @@ class AnomalyDetectionManager:
         _name_ : Dict[str,Callback]
             Dictionary of name and callback
         """
-        if self.ckptDir is not None:
-            if not self.ckptDir.exists():
-                self.ckptDir.mkdir(parents=True)
-            self.ckptPath = self.ckptDir / (self.ckptFileName + self.ckptSuffix)
-        else:
-            AttributeError(f"ckptDir is both None")
+        # if self.ckptDir is not None:
+        #     if not self.ckptDir.exists():
+        #         self.ckptDir.mkdir(parents=True)
+        #     self.ckptPath = self.ckptDir / (self.ckptFileName + self.ckptSuffix)
+        # else:
+        #     AttributeError(f"ckptDir is both None")
 
-        checkpointCallback = ModelCheckpoint(
-            dirpath=self.ckptDir,
-            filename=self.ckptFileName,
-            monitor="image_F1AdaptiveThreshold",  # val_loss not found?
-            verbose=True,
-            save_top_k=1,  # Save only the best model
-            mode="min",  # Save the model with the minimum training loss,
-            enable_version_counter=False
-        )
+        # checkpointCallback = ModelCheckpoint(
+        #     dirpath=self.ckptDir,
+        #     filename=self.ckptFileName,
+        #     monitor="image_F1AdaptiveThreshold",  # val_loss not found?
+        #     verbose=True,
+        #     save_top_k=1,  # Save only the best model
+        #     mode="min",  # Save the model with the minimum training loss,
+        #     enable_version_counter=False
+        # )
         
         # graphCallback = GraphLogger()
         timerCallback = TimerCallback()
@@ -708,7 +679,7 @@ class AnomalyDetectionManager:
 
         self.callbacks:Dict[str, Callback] = {
             # "progress_bar": progressBar,
-            "checkpoint": checkpointCallback,
+            # "checkpoint": checkpointCallback,generate_run_id
             # "graph": graphCallback,
             "timer": timerCallback
         }
@@ -743,7 +714,7 @@ class AnomalyDetectionManager:
     #         raise AttributeError("Expected model attribute to be set")
     #     return self.model
 
-    def loadCheckpoint(self, path:Path, tilingPipelineConfig: TilingPipelineConfig):
+    def loadCheckpoint(self, path:Optional[Path], tilingPipelineConfig: TilingPipelineConfig):
         """
         Check if the checkpoints for a tiledEnsemble run (eval, inference) are available at the expected directory
 
@@ -759,6 +730,12 @@ class AnomalyDetectionManager:
         _name_ : CheckpointNotFoundError
             If not all expected checkpoints are found.
         """
+        if path is None:
+            if self.ckptDir is not None:
+                path = self.ckptDir
+                logger.info(f"Loading checkpoint from manger.ckptDir: {self.ckptDir}")
+            else:
+                raise AttributeError("Either path needs to be given to loadCheckpoint or ckptDir needs to be set for manager.")
         complete, missingCkpt = checkTiledCheckpointsExist(ckptDir=path, tilingPipelineConfig=tilingPipelineConfig)
         if complete:
             self.state |= ManagerState.CHECKPOINT_AVAILABLE
@@ -854,7 +831,6 @@ class AnomalyDetectionManager:
                              trainingDir: Path,
                              ckptDir: Path,
                              datasetSession: DatasetSession,
-                            #  datamodule: FODataModule,
                              dataModuleConfig: DataModuleConfig,
                              tilingPipelineConfig:TilingPipelineConfig,
                              inferencerConfig: TrainerConfig,
@@ -907,9 +883,12 @@ class AnomalyDetectionManager:
 
     def _prepareRun(
         self,
+        trainerConfig:TrainerConfig,
         modelConfig: ModelConfig,
         datasetSession: DatasetSession,
+        datamoduleConfig: DataModuleConfig,
         tilingPipelineConfig: TilingPipelineConfig,
+        runLabel: Optional[str] = None
     ) -> RunContext:
         """
         Shared setup for train()/eval(): resolve paths, wire up tiling,
@@ -930,31 +909,26 @@ class AnomalyDetectionManager:
         _name_ : RunContext
             Run name, output directory, checkpoint directory, (checkpoint path, not applicable for tiled)
         """
-
-        category = datasetSession.category  # the *selected* category, not categories[0]
-        runName = (
-            f"{modelConfig.name}-{datasetSession.datasetName}-{category}"
-            if category is not None
-            else f"{modelConfig.name}-{datasetSession.datasetName}"
-        )
-
+        # if ManagerState.RUN_PREPARED in self.state:
+        #     return (RunContext(runName=self.runId, outputDir=self.outputDir))
+        runId = generate_run_id(runLabel)
         outputDir = resolve_output_dir(
-            baseOutputDir=self.baseOutputDir,
-            datasetName=datasetSession.datasetName,
-            modelName=modelConfig.name,
-            category=category[0] if category is not None else None,
-            tiling=True,
+            baseOutputDir=self.baseOutputDir, datasetName=datasetSession.datasetName,
+            modelName=modelConfig.name, runId=runId, category=datasetSession.category, tiling=True,
         )
-        ckptDir, ckptPath = resolve_checkpoint_paths(outputDir, self.ckptFileName, self.ckptSuffix)
+        # ckptDir = resolve_checkpoint_paths(outputDir)
 
-        self.outputDir, self.ckptDir, self.ckptPath = outputDir, ckptDir, ckptPath
+        effective_config = serialize_effective_config(trainerConfig, modelConfig, datamoduleConfig, tilingPipelineConfig, datasetSession)
+        print(effective_config)
+        write_run_manifest(outputDir, effective_config)
+
+        self.outputDir, self.runId = outputDir, runId
         self._apply_visualizer_output_dir(outputDir)
         self.setupTiling(tilingPipelineConfig)
         self.setupTrainingCallbacks()
-        self.setupWandBLogger(runName, outputDir, self.version)
         self.state |= ManagerState.RUN_PREPARED
 
-        return RunContext(runName=runName, outputDir=outputDir, ckptDir=ckptDir, ckptPath=ckptPath)
+        return RunContext(runName=runId, outputDir=outputDir)
 
     def train(
         self,
@@ -966,13 +940,17 @@ class AnomalyDetectionManager:
     ) -> None:
         datasetSession = self._resolve_dataset_session(datasetSession)
         self._require("train")
-        ctx = self._prepareRun(modelConfig, datasetSession, tilingPipelineConfig)
+        ctx = self._prepareRun(trainerConfig, modelConfig, datasetSession, datamoduleConfig=datamoduleConfig, tilingPipelineConfig=tilingPipelineConfig)
+        self._runConfigFiles().copy_to(ctx.outputDir) 
+         # raw YAMLs alongside the manifest
+        self.ckptDir = resolve_checkpoint_paths(ctx.outputDir)
+
         self._trainTiledModel(
             datasetSession=datasetSession, trainerConfig=trainerConfig,
             datamoduleConfig=datamoduleConfig, modelConfig=modelConfig,
             tilingPipelineConfig=tilingPipelineConfig,
         )
-        complete, missing = checkTiledCheckpointsExist(ctx.ckptDir, tilingPipelineConfig)
+        complete, missing = checkTiledCheckpointsExist(self.ckptDir, tilingPipelineConfig)
         if complete:
             self.state |= ManagerState.TRAINED | ManagerState.CHECKPOINT_AVAILABLE
         else:
@@ -985,11 +963,25 @@ class AnomalyDetectionManager:
         datamoduleConfig: DataModuleConfig,
         datasetSession: DatasetSession,
         tilingPipelineConfig: TilingPipelineConfig,
+        modelTrainingDir: Optional[Path] = None,
     ) -> None:
         """Evaluate the current model on the current dataset. Tiled ensemble only for now."""
         datasetSession = self._resolve_dataset_session(datasetSession)
+        if modelTrainingDir is not None:
+            self.modelTrainingDir = modelTrainingDir
+        else:
+            if self.modelTrainingDir is None:
+                raise AttributeError("Need a modelTrainingDir and neither attribute nor class atrribute are available")
+            modelTrainingDir = self.modelTrainingDir
+        self.ckptDir = resolve_checkpoint_paths(modelTrainingDir)
+        complete, missing = checkTiledCheckpointsExist(self.ckptDir, tilingPipelineConfig)
+        if not complete:
+            raise CheckpointNotFoundError(
+                f"Incomplete checkpoint set in {self.ckptDir}: missing {[p.name for p in missing]}",
+                missing=[f"Checkpoint file {p.name}" for p in missing],
+            )
         self._require("eval")
-        self._prepareRun(modelConfig, datasetSession, tilingPipelineConfig)
+        self._prepareRun(evalConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
         self._evalTiledModel(
             datasetSession=datasetSession, evalConfig=evalConfig,
             datamoduleConfig=datamoduleConfig, modelConfig=modelConfig,
@@ -1000,10 +992,10 @@ class AnomalyDetectionManager:
         self,
         inferencerConfig: TrainerConfig,
         modelConfig: ModelConfig,
-        trainingDir: Path,
         datamoduleConfig: DataModuleConfig,
         datasetSession: DatasetSession,
         tilingPipelineConfig: TilingPipelineConfig,
+        modelTrainingDir: Optional[Path] = None,
     ) -> None:
         """Run inference: write results under the *current* dataset's output dir,
         but read the checkpoint from `trainingDir` (a prior, separate run).
@@ -1011,35 +1003,36 @@ class AnomalyDetectionManager:
         the two directories are now resolved independently and explicitly.
         """
         datasetSession = self._resolve_dataset_session(datasetSession)
-        ckptDir, _ = resolve_checkpoint_paths(trainingDir, self.ckptFileName, self.ckptSuffix)
+        if modelTrainingDir is not None:
+            self.modelTrainingDir = modelTrainingDir
+        else:
+            if self.modelTrainingDir is None:
+                raise AttributeError("Need a modelTrainingDir and neither attribute nor class atrribute are available")
+            modelTrainingDir = self.modelTrainingDir
 
-        complete, missing = checkTiledCheckpointsExist(ckptDir, tilingPipelineConfig)
+        self.ckptDir = resolve_checkpoint_paths(modelTrainingDir)
+        complete, missing = checkTiledCheckpointsExist(self.ckptDir, tilingPipelineConfig)
         if not complete:
             raise CheckpointNotFoundError(
-                f"Incomplete checkpoint set in {ckptDir}: missing {[p.name for p in missing]}",
+                f"Incomplete checkpoint set in {self.ckptDir}: missing {[p.name for p in missing]}",
                 missing=[f"Checkpoint file {p.name}" for p in missing],
             )
         
         self._require("inference")
-        outputDir = resolve_output_dir(
-            baseOutputDir=self.baseOutputDir, datasetName=datasetSession.datasetName,
-            modelName=modelConfig.name, category=datasetSession.category[0] if datasetSession.category is not None else None, tiling=True,
-        )
-        ckptDir, ckptPath = resolve_checkpoint_paths(trainingDir, self.ckptFileName, self.ckptSuffix)
-        if not ckptPath.exists():
-            raise CheckpointNotFoundError(
-                f"No checkpoint at {ckptPath}. Point trainingDir at a completed training run.",
-                missing=["A valid checkpoint in trainingDir"],
-            )
+        self._prepareRun(inferencerConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
 
-        self.outputDir, self.ckptDir, self.ckptPath = outputDir, ckptDir, ckptPath
-        self._apply_visualizer_output_dir(outputDir)
-        self.setupTiling(tilingPipelineConfig)
+        # self.outputDir = ctx.outputDir
+        # self._apply_visualizer_output_dir(ctx.outputDir)
+        # self.setupTiling(tilingPipelineConfig)
 
         self._inferenceTiledModel(
-            trainingDir=trainingDir, ckptDir=ckptDir, datasetSession=datasetSession,
-            dataModuleConfig=datamoduleConfig, tilingPipelineConfig=tilingPipelineConfig,
-            inferencerConfig=inferencerConfig, modelConfig=modelConfig,
+            trainingDir=modelTrainingDir, 
+            ckptDir=self.ckptDir, 
+            datasetSession=datasetSession,
+            dataModuleConfig=datamoduleConfig, 
+            tilingPipelineConfig=tilingPipelineConfig,
+            inferencerConfig=inferencerConfig, 
+            modelConfig=modelConfig,
         )
 
     def exportResults(self, exportPath:Path) -> None:
