@@ -11,8 +11,11 @@ logging:
 model:
   name: "padim"
   config: padim.yaml
-  weights_path: "results/MVTecADShort/Padim/tiled/checkpoints"
-  trainingDir: "results/MVTecADShort/Padim/tiled"
+  # weights_path/trainingDir pin an exact prior run. Omit both (as here) to have
+  # them resolved automatically from results/ at load time, picking the run
+  # per `selection`: "latest" (newest complete run) or "best" (highest
+  # image_F1Score among complete runs, read from each run's metric_results.csv).
+  selection: "best"
 
 tiling:
   enable: True

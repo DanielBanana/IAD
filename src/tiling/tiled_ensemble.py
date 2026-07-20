@@ -225,8 +225,8 @@ class TrainTiledEnsemble(Pipeline):
 
         return runners
 
-    def setFODataset(self, dataset:FODataset) -> None:
-        self.dataset = dataset
+    # def setFODataset(self, dataset:FODataset) -> None:
+    #     self.dataset = dataset
 
     def run(self, args: Namespace | None = None) -> None:
         """Run the pipeline.
@@ -374,29 +374,29 @@ class EvalTiledEnsemble(Pipeline):
 
         return runners
     
-    def setDatamodule(self, datamodule: FODataModule):
-        self.datamodule = datamodule
-        self.datamoduleArgs = {
-            "init_args": {
-                "name": datamodule.name,
-                "root": datamodule.root,
-                "category": datamodule.category,
-                "train_batch_size": datamodule.train_batch_size,
-                "eval_batch_size": datamodule.eval_batch_size,
-                "num_workers": datamodule.num_workers,
-                "train_augmentations": datamodule.train_augmentations,
-                "val_augmentations": datamodule.val_augmentations,
-                "test_augmentations": datamodule.test_augmentations,
-                "augmentations": None,
-                "test_split_mode": datamodule.test_split_mode,
-                "test_split_ratio": datamodule.test_split_ratio,
-                "val_split_mode": datamodule.val_split_mode,
-                "val_split_ratio": datamodule.val_split_ratio,
-            }
-        }
+    # def setDatamodule(self, datamodule: FODataModule):
+    #     self.datamodule = datamodule
+    #     self.datamoduleArgs = {
+    #         "init_args": {
+    #             "name": datamodule.name,
+    #             "root": datamodule.root,
+    #             "category": datamodule.category,
+    #             "train_batch_size": datamodule.train_batch_size,
+    #             "eval_batch_size": datamodule.eval_batch_size,
+    #             "num_workers": datamodule.num_workers,
+    #             "train_augmentations": datamodule.train_augmentations,
+    #             "val_augmentations": datamodule.val_augmentations,
+    #             "test_augmentations": datamodule.test_augmentations,
+    #             "augmentations": None,
+    #             "test_split_mode": datamodule.test_split_mode,
+    #             "test_split_ratio": datamodule.test_split_ratio,
+    #             "val_split_mode": datamodule.val_split_mode,
+    #             "val_split_ratio": datamodule.val_split_ratio,
+    #         }
+    #     }
 
-    def setFODataset(self, dataset:FODataset):
-        self.dataset = dataset
+    # def setFODataset(self, dataset:FODataset):
+    #     self.dataset = dataset
 
     def run(self, args: Namespace | None = None) -> None:
         """Run the pipeline.
@@ -485,25 +485,6 @@ class PredTiledEnsemble(Pipeline):
         self.inferencerConfig = inferencerConfig
         self.modelConfig = modelConfig
         self.gtAvail = gtAvail
-        # if self.datamoduleArgs is None:
-        #     self.datamoduleArgs = {
-        #         "init_args": {
-        #             "name": datamodule.name,
-        #             "root": datamodule.root,
-        #             "category": datamodule.category,
-        #             "train_batch_size": datamodule.train_batch_size,
-        #             "eval_batch_size": datamodule.eval_batch_size,
-        #             "num_workers": datamodule.num_workers,
-        #             "train_augmentations": datamodule.train_augmentations,
-        #             "val_augmentations": datamodule.val_augmentations,
-        #             "test_augmentations": datamodule.test_augmentations,
-        #             "augmentations": None,
-        #             "test_split_mode": datamodule.test_split_mode,
-        #             "test_split_ratio": datamodule.test_split_ratio,
-        #             "val_split_mode": datamodule.val_split_mode,
-        #             "val_split_ratio": datamodule.val_split_ratio,
-        #         }
-        #     }
 
     def _setup_runners(self, args: dict[str,Any]) -> List[Runner]:
         """Set up the runners for the pipeline.
@@ -521,55 +502,7 @@ class PredTiledEnsemble(Pipeline):
 
         runners: List[Runner] = []
    
-        seed:int = int(args.get("seed", 0))
-        # ckptPath:Path|str|None = args.get("ckptPath",None)
-        # if ckptPath is not None:
-        #     ckptPath = Path(ckptPath)
-        #     logger.info(f"Checkpoint path: {ckptPath}")
-        # else:
-        #     ValueError(f"ckptPath missing for {self.__class__} pipeline")
-
-        # accelerator:str = args.get("accelerator", "cpu")
-
-        # tiling_args = args.get("tiling", None)
-        # if tiling_args is None:
-        #     raise ValueError(f"No Tiling args given to {self} pipeline")
-        
-        # if self.datamoduleArgs is not None:
-        #     # Overwrite data arguments with given datamodule args (Assuming if they are given that they are more important)
-        #     args["data"] = self.datamoduleArgs
-        #     dataArgs = self.datamoduleArgs
-        # else:
-        #     dataArgs = args.get("data", None) # TODO: Example pipeline takes config and loads from disk, we want to supply the data as a loaded datamodule
-        # if dataArgs is None:
-        #     raise AttributeError(f"Neither data_args nor datamodule given in {self.__class__} ; Quitting.")
-        # else:
-        #     assert "init_args" in dataArgs.keys()
-        #     assert "val_split_mode" in dataArgs["init_args"]
-        # valSplitMode:ValSplitMode = dataArgs["init_args"]["val_split_mode"]
-        # if valSplitMode == TestSplitMode.NONE:
-        #     logger.info("Test split mode set to `none`, skipping test phase.")
-        #     return runners
-        
-        # nStage:str|None = args.get("normalization_stage", None)
-        # if nStage is None:
-        #     logger.warning(f"Normalization-Stage not given to {self} pipeline")
-        #     normalization_stage = NormalizationStage("none")
-        # else:
-        #     normalization_stage = NormalizationStage(nStage)
-
-        # tStage:str|None = args.get("thresholding_stage", None)
-        # if tStage is None:
-        #     logger.warning(f"ThresholdingStage not given to {self} pipeline")
-        #     thresholding_stage = ThresholdingStage("image")
-        # else:
-        #     thresholding_stage = ThresholdingStage(tStage)
-        
-        # mArgs:dict[str,Any]|None = args.get("model",None)
-        # if mArgs is None:
-        #     raise AttributeError(f"model arguments missing from config for {self.__class__} pipeline")
-        # else:
-        #     modelArgs = mArgs        
+        seed:int = int(args.get("seed", 0))        
 
         visualisation_args:dict[str,Any] = {
             "field_size": self.tilingPipelineConfig.image_size,
@@ -649,29 +582,29 @@ class PredTiledEnsemble(Pipeline):
 
         return runners
     
-    def setDatamodule(self, datamodule: FODataModule):
-        self.datamodule = datamodule
-        self.datamoduleArgs = {
-            "init_args": {
-                "name": datamodule.name,
-                "root": datamodule.root,
-                "category": datamodule.category,
-                "train_batch_size": datamodule.train_batch_size,
-                "eval_batch_size": datamodule.eval_batch_size,
-                "num_workers": datamodule.num_workers,
-                "train_augmentations": datamodule.train_augmentations,
-                "val_augmentations": datamodule.val_augmentations,
-                "test_augmentations": datamodule.test_augmentations,
-                "augmentations": None,
-                "test_split_mode": datamodule.test_split_mode,
-                "test_split_ratio": datamodule.test_split_ratio,
-                "val_split_mode": datamodule.val_split_mode,
-                "val_split_ratio": datamodule.val_split_ratio,
-            }
-        }
+    # def setDatamodule(self, datamodule: FODataModule):
+    #     self.datamodule = datamodule
+    #     self.datamoduleArgs = {
+    #         "init_args": {
+    #             "name": datamodule.name,
+    #             "root": datamodule.root,
+    #             "category": datamodule.category,
+    #             "train_batch_size": datamodule.train_batch_size,
+    #             "eval_batch_size": datamodule.eval_batch_size,
+    #             "num_workers": datamodule.num_workers,
+    #             "train_augmentations": datamodule.train_augmentations,
+    #             "val_augmentations": datamodule.val_augmentations,
+    #             "test_augmentations": datamodule.test_augmentations,
+    #             "augmentations": None,
+    #             "test_split_mode": datamodule.test_split_mode,
+    #             "test_split_ratio": datamodule.test_split_ratio,
+    #             "val_split_mode": datamodule.val_split_mode,
+    #             "val_split_ratio": datamodule.val_split_ratio,
+    #         }
+    #     }
 
-    def setFODataset(self, dataset:FODataset):
-        self.dataset = dataset
+    # def setFODataset(self, dataset:FODataset):
+    #     self.dataset = dataset
 
     def run(self, args: Namespace | None = None) -> None:
         """Run the pipeline.
@@ -1480,7 +1413,7 @@ def get_ensemble_engine(
     trainer_kwargs.pop("default_root_dir", None)
     trainer_kwargs.pop("devices", None)
 
-    logger.info("Engine: Accelerator: %s, devices: %s", accelerator, devices)
+    logger.info("Engine: Accelerator: %s, devices: %s, trainer_kwargs: %s", accelerator, devices, trainer_kwargs)
 
     # create engine for specific tile location
     engine = AOITiledEnsembleEngine(

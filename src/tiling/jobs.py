@@ -217,7 +217,7 @@ class AOIMergeJob(Job):
             for batch_idx in tqdm(range(merger.num_batches), desc="Prediction merging")
         ]
         logger.debug(f"{self.name}: number of batches: {merger.num_batches}")
-        logger.debug(f"{self.name}: Sample merged predition: {merged_predictions[0].image[0]}")
+        # logger.debug(f"{self.name}: Sample merged predition: {merged_predictions[0].image[0]}")
         
         return merged_predictions  # noqa: RET504
 
@@ -769,7 +769,7 @@ class AOIVisualizationJob(Job):
 
         for batch in tqdm(self.predictions, desc="Visualisation"):
             for data in batch:
-                logger.debug(f"{self.name}: item: {data}")
+                # logger.debug(f"{self.name}: item: {data}")
                 # for item in batch:
                 image = visualize_image_item(
                     data,
