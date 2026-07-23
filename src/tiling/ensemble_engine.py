@@ -42,19 +42,38 @@ class AOITiledEnsembleEngine(TiledEnsembleEngine):
     def _setup_anomalib_callbacks(self) -> None:
         """Modified method to enable individual model training. It's called when Trainer is being set up."""
         callbacks: list[Callback] = []
+        tile_i, tile_j = self.tile_index
+        checkpoint_dir = self._cache.args["default_root_dir"] / "checkpoints"
+        checkpoint_filename = f"model{tile_i}_{tile_j}"
 
-        # Add ModelCheckpoint if it is not in the callbacks list.
-        has_checkpoint_callback = any(isinstance(c, ModelCheckpoint) for c in self._cache.args["callbacks"])
-        if not has_checkpoint_callback:
-            tile_i, tile_j = self.tile_index
-            callbacks.append(
-                ModelCheckpoint(
-                    dirpath=self._cache.args["default_root_dir"] / "checkpoints",
-                    filename=f"model{tile_i}_{tile_j}",
-                    auto_insert_metric_name=False,
-                ),
+        # If the user configured their own ModelCheckpoint (e.g. via the yaml `callbacks:`
+        # list, same mechanism as EarlyStopping), reuse its behaviour settings (monitor,
+        # mode, save_top_k, ...) but force dirpath/filename to this tile-aware scheme.
+        # A user-supplied dirpath/filename would collide across tiles - every tile in the
+        # ensemble shares the same default_root_dir, and the merge/predict/thresholding
+        # stages locate each tile's checkpoint by this exact `model{i}_{j}` filename.
+        remaining_callbacks = list(self._cache.args["callbacks"])
+        existing = next((c for c in remaining_callbacks if isinstance(c, ModelCheckpoint)), None)
+        if existing is not None:
+            remaining_callbacks = [c for c in remaining_callbacks if c is not existing]
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=checkpoint_dir,
+                filename=checkpoint_filename,
+                auto_insert_metric_name=False,
+                monitor=existing.monitor,
+                mode=existing.mode,
+                save_top_k=existing.save_top_k,
+                save_last=existing.save_last,  # type: ignore[arg-type]  # runtime value is always bool | "link" | None, same constraint as the constructor
+                every_n_epochs=existing.every_n_epochs,
             )
+        else:
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=checkpoint_dir,
+                filename=checkpoint_filename,
+                auto_insert_metric_name=False,
+            )
+        callbacks.append(checkpoint_callback)
         callbacks.append(TimerCallback())
 
         # Combine the callbacks, and update the trainer callbacks.
-        self._cache.args["callbacks"] = callbacks + self._cache.args["callbacks"]
+        self._cache.args["callbacks"] = callbacks + remaining_callbacks
