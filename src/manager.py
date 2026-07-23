@@ -11,13 +11,41 @@ import datetime
 import logging
 import logging.config
 import sys
+import threading
 import warnings
 from logging.config import dictConfig
 from enum import IntFlag, auto
 from pathlib import Path
-from typing import Any, List, Tuple, Optional, Dict, Type
+from typing import Any, Callable, List, Tuple, Optional, Dict, Type
 from dataclasses import dataclass
 from typing import Optional
+
+# Windows WDDM adds ~100-200 KB of C stack per CUDA call, exhausting the 1 MB main
+# thread stack that python.exe ships with.  Run GPU-heavy pipelines in a thread that
+# has a generous stack so the kernel cannot crash mid-training.
+_PIPELINE_STACK_SIZE = 64 * 1024 * 1024  # 64 MB
+
+
+def _run_in_large_stack(fn: Callable) -> None:
+    """Run fn() in a new thread with a 64 MB stack, re-raising any exception."""
+    exc: list = []
+
+    def _target():
+        try:
+            fn()
+        except Exception as e:
+            exc.append(e)
+
+    prev = threading.stack_size(_PIPELINE_STACK_SIZE)
+    try:
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+        t.join()
+    finally:
+        threading.stack_size(prev)
+
+    if exc:
+        raise exc[0]
 from jsonargparse import ArgumentParser, Namespace
 import hashlib
 import json
@@ -781,7 +809,7 @@ class AnomalyDetectionManager:
                                            modelConfig=modelConfig,
                                            trainerConfig=trainerConfig)
        
-        trainPipeline.run()
+        _run_in_large_stack(trainPipeline.run)
 
     def _evalTiledModel(self,
                          datasetSession:DatasetSession,
@@ -824,8 +852,8 @@ class AnomalyDetectionManager:
                                            modelConfig=modelConfig,
                                            evalConfig=evalConfig,
                                            ckptPath=self.ckptDir)
-       
-        evalPipeline.run()
+
+        _run_in_large_stack(evalPipeline.run)
 
     def _inferenceTiledModel(self,
                              trainingDir: Path,
@@ -878,8 +906,8 @@ class AnomalyDetectionManager:
                                           inferencerConfig=inferencerConfig,
                                           modelConfig=modelConfig
                                           )
-                                          
-        inferencerPipeline.run()
+
+        _run_in_large_stack(inferencerPipeline.run)
 
     def _prepareRun(
         self,
