@@ -332,7 +332,8 @@ class DatasetConfig:
 class DataModuleConfig:
     val_split_mode: ValSplitMode
     test_split_mode: TestSplitMode
-    train_batch_size: Optional[int] = None
+    train_batch_size: Optional[int | str] = None  # int, or "auto" to probe the largest batch size that fits in GPU memory
+    eval_batch_size: Optional[int | str] = None  # int, or "auto" (see train_batch_size)
     train_augmentations: Optional[List[Any]] = None
     val_augmentations: Optional[List[Any]] = None
     test_augmentations: Optional[List[Any]] = None
@@ -340,6 +341,7 @@ class DataModuleConfig:
     val_split_ratio: Optional[float] = None
     test_split_ratio: Optional[float] = None
     seed: Optional[int] = None
+    num_workers: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d:Dict[str,Any] = {}
@@ -357,6 +359,7 @@ class DataModuleConfig:
         """Create a DataModuleConfig instance from a dictionary."""
         return cls(
             train_batch_size=config.get("train_batch_size"),
+            eval_batch_size=config.get("eval_batch_size"),
             train_augmentations=config.get("train_augmentations"),
             val_augmentations=config.get("val_augmentations"),
             test_augmentations=config.get("test_augmentations"),
@@ -366,6 +369,8 @@ class DataModuleConfig:
             test_split_mode=TestSplitMode(config.get("test_split_mode", TestSplitMode.NONE)),
             test_split_ratio=config.get("test_split_ratio"),
             seed=config.get("seed"),
+            # accept both "num_workers" and the legacy "max_workers" key
+            num_workers=config.get("num_workers", config.get("max_workers")),
         )
 
     @classmethod
@@ -607,7 +612,14 @@ class DatasetSession:
 
         if self.datasetName == "":
             self.datasetName = "unnamedDataset"
-        datamodule = FODataModule(name=self.datasetName, samples=self.FO_Dataset, root=outputPath, **datamoduleConfig.to_dict())
+        dm_kwargs = datamoduleConfig.to_dict()
+        # "auto" batch sizes are resolved later, per tile, by the tiled ensemble pipeline
+        # (it needs the model and tile size to probe GPU memory). Use a safe placeholder
+        # here so datamodule construction doesn't receive a non-int batch size.
+        for key in ("train_batch_size", "eval_batch_size"):
+            if dm_kwargs.get(key) == "auto":
+                dm_kwargs[key] = 2
+        datamodule = FODataModule(name=self.datasetName, samples=self.FO_Dataset, root=outputPath, **dm_kwargs)
         datamodule.setup()
         self.datamodule = datamodule
         return self.datamodule
@@ -962,7 +974,7 @@ class TrainerConfig:
     benchmark: Optional[bool] = None
     inference_mode: bool = True
     use_distributed_sampler: bool = True
-    profiler: Optional[Any] = None
+    profiler: Optional[Any] = "simple"
     detect_anomaly: bool = False
     barebones: bool = False
     plugins: Optional[Any] = None
@@ -971,6 +983,7 @@ class TrainerConfig:
     default_root_dir: Optional[str] = None
     # enable_autolog_hparams: bool = True
     # model_registry: Optional[Any] = None
+    n_parallel_jobs: Optional[int] = None  # tiles to train in parallel; None = one per GPU
 
     @staticmethod
     def instantiate_callback(callback_spec: Dict[str, Any]) -> Any:

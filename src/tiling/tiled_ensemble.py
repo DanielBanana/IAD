@@ -10,8 +10,10 @@ import logging
 import torch
 import json
 import os
+import contextlib
+import functools
 
-from typing import TYPE_CHECKING, List, Any, Dict
+from typing import TYPE_CHECKING, List, Any, Dict, Literal
 from collections.abc import Generator
 from itertools import product
 from pathlib import Path
@@ -74,6 +76,16 @@ import platform
 
 logger = logging.getLogger(__name__)
 
+if torch.cuda.is_available():
+    # Enables TensorFloat-32 for float32 matmuls/convs on Tensor Core GPUs (Ampere+,
+    # incl. the RTX 3070 this pipeline targets). float32 tensors are the common case
+    # here (no AMP/precision override is configured), so without this Lightning's own
+    # startup warning is right: those ops run at full fp32 precision and leave the
+    # Tensor Cores unused. "high" trades a small amount of matmul precision (TF32,
+    # ~10 bits mantissa vs fp32's 23) for a substantial throughput gain; anomalib
+    # models' tolerance for this is the same as any other fp32-trained CNN/ViT.
+    torch.set_float32_matmul_precision("high")
+
 def get_device():
     if platform.system() == "Darwin" and torch.backends.mps.is_available():
         return "mps"
@@ -81,6 +93,154 @@ def get_device():
         return "cuda"
     else:
         return "cpu"
+
+
+def _pipeline_trainer_kwargs(trainerConfig: TrainerConfig) -> Dict[str, Any]:
+    """Build the trainer_args dict handed to each stage's Job/JobGenerator.
+
+    TrainModelJob/PredictJob thread this straight into ``parse_trainer_kwargs`` ->
+    ``lightning.pytorch.Trainer(**kwargs)``, so everything here must be a real Trainer
+    kwarg - drop n_parallel_jobs, which is our own bolted-on config field.
+    """
+    kwargs = trainerConfig.to_kwargs()
+    kwargs.pop("n_parallel_jobs", None)
+    return kwargs
+
+
+# Cache of probed batch sizes, keyed by (accelerator, model class, tile shape, which
+# batch-size arg). All tiles in an ensemble share the same tile shape, so probing once
+# per unique key instead of once per tile avoids repeating the (slow) OOM search.
+_BATCH_SIZE_PROBE_CACHE: dict[tuple[Any, ...], int] = {}
+
+
+@contextlib.contextmanager
+def _trust_own_checkpoints():
+    """Temporarily default ``torch.load(weights_only=...)`` to ``False``.
+
+    torch>=2.6 defaults ``weights_only=True``, which refuses to unpickle non-tensor
+    objects (e.g. anomalib's ``PreProcessor``) bundled in a full Lightning checkpoint.
+    Only use this around loads of checkpoints we wrote ourselves moments earlier in
+    this same process - never around loading a checkpoint of unknown/external origin.
+    """
+    original_load = torch.load
+
+    @functools.wraps(original_load)
+    def patched_load(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    torch.load = patched_load
+    try:
+        yield
+    finally:
+        torch.load = original_load
+
+
+def probe_optimal_batch_size(
+    model: AnomalibModule,
+    datamodule: AnomalibDataModule,
+    accelerator: str,
+    root_dir: Path,
+    batch_arg_name: str,
+    method: Literal["fit", "validate", "test", "predict"],
+    max_val: int = 64,
+) -> int:
+    """Empirically find the largest batch size that fits in memory via binary search.
+
+    Runs against a deep-copied model and a throwaway ``Trainer`` so the real
+    training/prediction run (and its checkpoints/workspace) is left untouched. This
+    is preferred over a closed-form memory estimate because actual GPU usage depends
+    on cuDNN's chosen conv algorithm, framework overhead and fragmentation, which
+    aren't reliably predictable from model size and tile shape alone.
+
+    Args:
+        model: Model to probe (used as a template; a deep copy is actually run).
+        datamodule: Ensemble datamodule already configured for this tile (tiling
+            collate function and resize already applied).
+        accelerator: Accelerator to probe on. Probing is skipped (and a small
+            conservative default returned) unless this is "cuda" - a single GPU is
+            the resource under contention here, so that's the only case worth the
+            probe cost.
+        root_dir: Root dir to scratch-write the prober's temporary checkpoint into.
+        batch_arg_name: "train_batch_size" or "eval_batch_size" - which datamodule
+            attribute the probe should search over and write the result back to.
+        method: Lightning method to probe with ("fit", "validate" or "test"). Use
+            "fit" for train_batch_size (exercises the real backward/optimizer step
+            for gradient-trained models), and "validate"/"test" for eval_batch_size
+            (matches whichever split predict will actually run on).
+        max_val: Upper bound on the search, to avoid testing unrealistically large
+            batch sizes.
+
+    Returns:
+        int: Largest batch size found to fit in memory (>= 1).
+    """
+    input_size = getattr(model, "input_size", None)
+    cache_key = (
+        accelerator,
+        model.__class__.__name__,
+        tuple(input_size) if input_size is not None else None,
+        batch_arg_name,
+        method,
+    )
+    if cache_key in _BATCH_SIZE_PROBE_CACHE:
+        return _BATCH_SIZE_PROBE_CACHE[cache_key]
+
+    if accelerator != "cuda":
+        logger.info(f"Batch size probing skipped on accelerator '{accelerator}'; using conservative default of 8.")
+        _BATCH_SIZE_PROBE_CACHE[cache_key] = 8
+        return 8
+
+    from copy import deepcopy
+    from lightning.pytorch import Trainer as PLTrainer
+    from lightning.pytorch.tuner.tuning import Tuner
+
+    probe_model = deepcopy(model)
+    probe_trainer = PLTrainer(
+        accelerator=accelerator,
+        devices=1,
+        default_root_dir=root_dir / ".batch_size_probe",
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        max_epochs=1,
+    )
+    tuner = Tuner(probe_trainer)
+
+    optimal: int | None
+    try:
+        # Tuner.scale_batch_size checkpoints the probe model/trainer before searching and
+        # restores it afterwards, so the search's real forward/backward trials don't leave
+        # the (discarded) probe model in a partially-updated state. That checkpoint bundles
+        # non-tensor objects (e.g. anomalib's PreProcessor), which torch>=2.6's strict
+        # `weights_only=True` default refuses to unpickle. The checkpoint is one we wrote
+        # ourselves a few lines above, in this same process, so trusting it here (unlike an
+        # arbitrary external checkpoint) is safe - relax just this restore accordingly.
+        with _trust_own_checkpoints():
+            optimal = tuner.scale_batch_size(
+                probe_model,
+                datamodule=datamodule,
+                method=method,
+                mode="binsearch",
+                batch_arg_name=batch_arg_name,
+                init_val=2,
+                steps_per_trial=1,
+                max_trials=6,
+                margin=0.1,
+                max_val=max_val,
+            )
+    except Exception:
+        logger.exception(f"Batch size probe for '{batch_arg_name}' failed; falling back to 1.")
+        optimal = 1
+    finally:
+        del probe_model, probe_trainer, tuner
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    optimal = max(1, optimal or 1)
+    logger.info(f"Batch size probe: {batch_arg_name} ({method}) -> {optimal}")
+    _BATCH_SIZE_PROBE_CACHE[cache_key] = optimal
+    return optimal
 
 class TrainTiledEnsemble(Pipeline):
     """Tiled ensemble training pipeline."""
@@ -141,11 +301,18 @@ class TrainTiledEnsemble(Pipeline):
             datamodule=self.datamodule,
             normalization_stage=self.tilingPipelineConfig.normalization_stage,
         )
-        if self.trainerConfig.accelerator == "cuda":
+        n_gpus = torch.cuda.device_count()
+        n_parallel = min(self.trainerConfig.n_parallel_jobs or n_gpus, n_gpus) if n_gpus > 0 else 1
+        if self.trainerConfig.n_parallel_jobs and self.trainerConfig.n_parallel_jobs > n_gpus:
+            logger.warning(
+                f"n_parallel_jobs ({self.trainerConfig.n_parallel_jobs}) exceeds available GPUs ({n_gpus}); "
+                f"clamping to {n_parallel} to avoid multiple processes contending for the same device.",
+            )
+        if self.trainerConfig.accelerator == "cuda" and n_parallel > 1:
             runners.append(
                 ParallelRunner(
                     train_job_generator,
-                    n_jobs=torch.cuda.device_count(),
+                    n_jobs=n_parallel,
                 ),
             )
         else:
@@ -173,9 +340,9 @@ class TrainTiledEnsemble(Pipeline):
             predictionDataset=None
         )
 
-        if self.trainerConfig.accelerator == "cuda":
+        if self.trainerConfig.accelerator == "cuda" and n_parallel > 1:
             runners.append(
-                ParallelRunner(predict_job_generator, n_jobs=torch.cuda.device_count()),
+                ParallelRunner(predict_job_generator, n_jobs=n_parallel),
             )
         else:
             runners.append(
@@ -242,8 +409,7 @@ class TrainTiledEnsemble(Pipeline):
 
         for runner in runners:
             try:
-                # job_args = pipeline_args.get(runner.generator.job_class.name)
-                job_args = {}
+                job_args = _pipeline_trainer_kwargs(self.trainerConfig)
                 previous_results = runner.run(job_args or {}, previous_results)
             except Exception:  # noqa: PERF203 catch all exception and allow try-catch in loop
                 logger.exception("An error occurred when running the runner.")
@@ -320,11 +486,12 @@ class EvalTiledEnsemble(Pipeline):
             predictionDataset=None
         )
         # 1. predict using test data
-        if self.evalConfig.accelerator == "cuda":
+        _n_eval_jobs = torch.cuda.device_count()
+        if self.evalConfig.accelerator == "cuda" and _n_eval_jobs > 1:
             runners.append(
                 ParallelRunner(
                     predict_job_generator,
-                    n_jobs=torch.cuda.device_count(),
+                    n_jobs=_n_eval_jobs,
                 ),
             )
         else:
@@ -412,8 +579,7 @@ class EvalTiledEnsemble(Pipeline):
 
         for runner in runners:
             try:
-                # job_args = pipeline_args.get(runner.generator.job_class.name)
-                job_args = {}
+                job_args = _pipeline_trainer_kwargs(self.evalConfig)
                 previous_results = runner.run(job_args or {}, previous_results)
             except Exception:  # noqa: PERF203 catch all exception and allow try-catch in loop
                 logger.exception("An error occurred when running the runner.")
@@ -529,11 +695,12 @@ class PredTiledEnsemble(Pipeline):
         )
 
         # 1. predict using test data
-        if self.inferencerConfig.accelerator == "cuda":
+        _n_inf_jobs = torch.cuda.device_count()
+        if self.inferencerConfig.accelerator == "cuda" and _n_inf_jobs > 1:
             runners.append(
                 ParallelRunner(
                     predict_job_generator,
-                    n_jobs=torch.cuda.device_count(),
+                    n_jobs=_n_inf_jobs,
                 ),
             )
         else:
@@ -620,8 +787,7 @@ class PredTiledEnsemble(Pipeline):
 
         for runner in runners:
             try:
-                # job_args = pipeline_args.get(runner.generator.job_class.name)
-                job_args = {}
+                job_args = _pipeline_trainer_kwargs(self.inferencerConfig)
                 previous_results = runner.run(job_args or {}, previous_results)
             except Exception:  # noqa: PERF203 catch all exception and allow try-catch in loop
                 logger.exception("An error occurred when running the runner.")
@@ -688,8 +854,10 @@ class TrainModelJob(Job):
         """
         devices: str | List[int] = "auto"
         if task_id is not None:
-            devices = [task_id]
-            logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
+            n_gpus = torch.cuda.device_count()
+            gpu_id = task_id % n_gpus if n_gpus > 0 else 0
+            devices = [gpu_id]
+            logger.info(f"Running job {self.model.__class__.__name__} with task_id {task_id} → device {gpu_id}")
 
         logger.info(f"Running {self.__class__}")
         logger.info("Training for tile at position %s,", self.tile_index)
@@ -810,6 +978,17 @@ class TrainModelJobGenerator(JobGenerator):
                 input_size=self.tilingPipelineConfig.tile_size,
             )
 
+            if self.dataModuleConfig is not None and self.dataModuleConfig.train_batch_size == "auto":
+                resolved_accelerator = self.accelerator if self.accelerator != "auto" else get_device()
+                datamodule.train_batch_size = probe_optimal_batch_size(
+                    model=model,
+                    datamodule=datamodule,
+                    accelerator=resolved_accelerator,
+                    root_dir=self.root_dir,
+                    batch_arg_name="train_batch_size",
+                    method="fit",
+                )
+
             # pass root_dir to engine so all models in ensemble have the same root dir
             yield TrainModelJob(
                 accelerator=self.accelerator,
@@ -885,8 +1064,10 @@ class PredictJob(Job):
         """
         devices: str | List[int] = "auto"
         if task_id is not None:
-            devices = [task_id]
-            logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
+            n_gpus = torch.cuda.device_count()
+            gpu_id = task_id % n_gpus if n_gpus > 0 else 0
+            devices = [gpu_id]
+            logger.info(f"Running job {self.model.__class__.__name__} with task_id {task_id} → device {gpu_id}")
 
         logger.info("Start of predicting for tile at position %s,", self.tile_index)
         seed_everything(self.seed)
@@ -1035,6 +1216,17 @@ class PredictJobGenerator(JobGenerator):
                 logger.info(f"Dataset for dataloader: {self.predictionDataset}")
                 dataloader:DataLoader[PredictDataset] = DataLoader(self.predictionDataset, collate_fn=datamodule.external_collate_fn, pin_memory=True)
             else:
+                if self.dataModuleConfig is not None and self.dataModuleConfig.eval_batch_size == "auto":
+                    resolved_accelerator = self.accelerator if self.accelerator != "auto" else get_device()
+                    datamodule.eval_batch_size = probe_optimal_batch_size(
+                        model=model,
+                        datamodule=datamodule,
+                        accelerator=resolved_accelerator,
+                        root_dir=self.root_dir,
+                        batch_arg_name="eval_batch_size",
+                        method="validate" if self.data_source == PredictData.VAL else "test",
+                    )
+
                 dataloader = datamodule.test_dataloader()
                 if self.data_source == PredictData.VAL:
                     dataloader = datamodule.val_dataloader()
@@ -1115,8 +1307,10 @@ class FOPredictJob(Job):
         """
         devices: str | List[int] = "auto"
         if task_id is not None:
-            devices = [task_id]
-            logger.info(f"Running job {self.model.__class__.__name__} with device {task_id}")
+            n_gpus = torch.cuda.device_count()
+            gpu_id = task_id % n_gpus if n_gpus > 0 else 0
+            devices = [gpu_id]
+            logger.info(f"Running job {self.model.__class__.__name__} with task_id {task_id} → device {gpu_id}")
 
         logger.info("Start of predicting for tile at position %s,", self.tile_index)
         seed_everything(self.seed)
