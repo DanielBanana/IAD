@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
 from pathlib import Path
 from PIL import Image
+from torch.utils.data import DataLoader
 from torchvision.transforms.v2 import Resize, Transform
 
 
@@ -767,6 +768,52 @@ class FODataModule(AnomalibDataModule):
 
         self.normal_split_ratio = normal_split_ratio
 
+    def _dataloader_kwargs(self) -> dict[str, Any]:
+        """Extra DataLoader kwargs the base AnomalibDataModule leaves off.
+
+        ``pin_memory`` speeds up host->device transfer (page-locked staging buffers),
+        and ``persistent_workers`` keeps worker processes alive across epochs instead
+        of respawning them every epoch - both reduce CPU-side overhead that would
+        otherwise leave the GPU waiting between batches.
+        """
+        return {
+            "pin_memory": True,
+            "persistent_workers": self.num_workers > 0,
+        }
+
+    def train_dataloader(self) -> DataLoader:
+        """Get training dataloader (see `_dataloader_kwargs` for why this differs from the base)."""
+        return DataLoader(
+            dataset=self.train_data,
+            shuffle=True,
+            batch_size=self.train_batch_size,
+            num_workers=self.num_workers,
+            collate_fn=self.external_collate_fn or self.train_data.collate_fn,
+            **self._dataloader_kwargs(),
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        """Get validation dataloader (see `_dataloader_kwargs` for why this differs from the base)."""
+        return DataLoader(
+            dataset=self.val_data,
+            shuffle=False,
+            batch_size=self.eval_batch_size,
+            num_workers=self.num_workers,
+            collate_fn=self.external_collate_fn or self.val_data.collate_fn,
+            **self._dataloader_kwargs(),
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        """Get test dataloader (see `_dataloader_kwargs` for why this differs from the base)."""
+        return DataLoader(
+            dataset=self.test_data,
+            shuffle=False,
+            batch_size=self.eval_batch_size,
+            num_workers=self.num_workers,
+            collate_fn=self.external_collate_fn or self.test_data.collate_fn,
+            **self._dataloader_kwargs(),
+        )
+
     def _setup(self, _stage: str | None = None) -> None:
         self.train_data = FODataset(
             name=self.name,
@@ -790,9 +837,14 @@ class FODataModule(AnomalibDataModule):
             Name of the datamodule.
         """
         return self._name
-    
+
     def __getstate__(self):
         state = self.__dict__.copy()
+        # fod.Dataset uses mongoengine metaclasses that can't be pickled (needed for
+        # multiprocessing spawn). By the time a job is submitted to ParallelRunner,
+        # setup() has already run (train_data/val_data/test_data are populated and
+        # _is_setup=True), so the subprocess never needs _unprocessed_samples.
+        state['_unprocessed_samples'] = None
         return state
 
     @classmethod
@@ -995,8 +1047,10 @@ class FODataset(AnomalibDataset):
                 # Create zero mask for normal samples
                 gt_mask = Mask(torch.zeros(image.shape[-2:])).to(torch.uint8)
             elif label_index == LabelName.ABNORMAL:
-                # Read mask for anomalous samples
-                gt_mask = read_mask(mask_path, as_tensor=True)
+                if mask_path:
+                    gt_mask = read_mask(mask_path, as_tensor=True)
+                else:
+                    gt_mask = Mask(torch.zeros(image.shape[-2:])).to(torch.uint8)
             # For UNKNOWN, gt_mask remains None
 
         # Apply augmentations if available
