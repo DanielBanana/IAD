@@ -1,5 +1,5 @@
-train_batch_size: 1
-eval_batch_size: 1
+train_batch_size: 14 # probes the largest batch size that fits in GPU memory once per run (see probe_optimal_batch_size)
+eval_batch_size: 14
 max_epochs: 1 # PaDiM only needs 1 epoch
 max_workers: 8
 test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
@@ -8,6 +8,8 @@ val_split_mode: "same_as_test" # none, same_as_text, from_train, from_test, synt
 val_split_ratio: 0.5 # not used if same_as_text
 accelerator: "auto"  # Also tried cpu, gpu, auto
 inference_mode: False
+n_parallel_jobs: 1 # only >1 GPUs actually benefit from ParallelRunner; single-GPU boxes get clamped to 1 anyway
+
 
 callbacks:
   - class_path: lightning.pytorch.callbacks.EarlyStopping

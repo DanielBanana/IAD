@@ -1,7 +1,7 @@
 # https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/patchcore.html
-train_batch_size: 8
-eval_batch_size: 8
-max_epochs: 10 # default for inp_former needs 100? epoch
+train_batch_size: auto
+eval_batch_size: auto
+max_epochs: 100 # default for inp_former needs 100? epoch
 max_workers: 8
 test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
 test_split_ratio: 0.2
@@ -11,11 +11,18 @@ num_sanity_val_steps: 0 #(skip validation sanity checks)
 gradient_clip_val: 0 #(no gradient clipping needed)
 accelerator: "auto"  # Also tried cpu, gpu, auto
 inference_mode: False
+check_val_every_n_epoch: 20
 
 # crop_size: [128,128] # default for inp_former only needs 256x256 crops, not used for patchcore
 callbacks:
   - class_path: lightning.pytorch.callbacks.EarlyStopping
     init_args:
       patience: 10
-      monitor: pixel_val_AUROC
+      monitor: image_AUROC
       mode: max
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: image_AUROC
+      mode: max
+      save_top_k: 1 # only overwrite the checkpoint when the monitored metric improves, instead of every epoch
+      every_n_epochs: 5
