@@ -8,7 +8,7 @@ from typing import Any
 
 from torch import Tensor
 
-from anomalib.data.utils.tiler import Tiler, compute_new_image_size
+from anomalib.data.utils.tiler import Tiler, compute_new_image_size, upscale_image
 
 class EnsembleTiler(Tiler):
     """Tile Image into (non)overlapping Patches which are then used for ensemble training.
@@ -121,6 +121,25 @@ class TileCollater:
         self.tile_index = tile_index
         self.default_collate_fn = default_collate_fn
 
+    def _crop_tile(self, tensor: "Tensor", tile_index: tuple[int, int]) -> "Tensor":
+        """Resize tensor to tiler's target size and crop the single requested tile.
+
+        Avoids allocating a tensor for all tiles (e.g. 16 × batch × 3 × 256 × 256
+        for a 4096-wide image), since only one tile is needed per job.
+        """
+        t = self.tiler
+        _, _, h, w = tensor.shape
+        resized_h, resized_w = compute_new_image_size(
+            image_size=(h, w),
+            tile_size=(t.tile_size_h, t.tile_size_w),
+            stride=(t.stride_h, t.stride_w),
+        )
+        resized = upscale_image(tensor, size=(resized_h, resized_w), mode=t.mode)
+        h_idx, w_idx = tile_index
+        loc_i = h_idx * t.stride_h
+        loc_j = w_idx * t.stride_w
+        return resized[:, :, loc_i : loc_i + t.tile_size_h, loc_j : loc_j + t.tile_size_w]
+
     def __call__(self, batch: list) -> dict[str, Any]:
         """Collate batch and tile images + masks from batch.
 
@@ -130,19 +149,12 @@ class TileCollater:
         Returns:
             dict[str, Any]: Collated batch dictionary with tiled images.
         """
-        # use default collate
         coll_batch = self.default_collate_fn(batch)
 
-        tiled_images = self.tiler.tile(coll_batch.image)
-        # return only tiles at given index
-        coll_batch.image = tiled_images[self.tile_index]
+        coll_batch.image = self._crop_tile(coll_batch.image, self.tile_index)
 
-        if hasattr(coll_batch, "gt_mask"):
-            if coll_batch.gt_mask is not None or coll_batch.gt_mask == "":
-                # insert channel (as mask has just one)
-                tiled_masks = self.tiler.tile(coll_batch.gt_mask.unsqueeze(1))
-
-                # return only tiled at given index, squeeze to remove previously added channel
-                coll_batch.gt_mask = tiled_masks[self.tile_index].squeeze(1)
+        if hasattr(coll_batch, "gt_mask") and coll_batch.gt_mask is not None:
+            mask = coll_batch.gt_mask.unsqueeze(1)
+            coll_batch.gt_mask = self._crop_tile(mask, self.tile_index).squeeze(1)
 
         return coll_batch
