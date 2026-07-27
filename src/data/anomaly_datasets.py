@@ -1337,12 +1337,16 @@ def loadTrainingDataFolder(path:Path, name:str, overwrite:bool=False) -> Tuple[f
 
 def loadPredictDataset(path:Path, name:str="pred", overwrite:bool=False):
     split = "pred"
-    dataset = fo.Dataset.from_dir(
-        dataset_dir=path,
-        dataset_type=fot.ImageDirectory,
-        name=name,
-        overwrite=overwrite
-    )
+    try:
+        dataset = fo.Dataset.from_dir(
+            dataset_dir=path,
+            dataset_type=fot.ImageDirectory,
+            name=name,
+            overwrite=overwrite
+        )
+    except ValueError as e:
+        logger.error(e)
+        dataset:fo.Dataset = fo.load_dataset(name=name)
     for sample in dataset:
         sample["split"] = split
         sample["label_index"] = LabelName.UNKNOWN
