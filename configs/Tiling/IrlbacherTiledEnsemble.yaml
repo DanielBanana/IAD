@@ -1,8 +1,3 @@
-seed: 42
-accelerator: "gpu"
-default_root_dir: 
-# default_root_dir: "results/tiled"
-
 tiling:
   image_size: [4500,4500]
   tile_size: [500,500]
@@ -15,34 +10,3 @@ SeamSmoothing:
   apply: True # if this is applied, area around tile seams are is smoothed
   sigma: 2 # sigma of gaussian filter used to smooth this area
   width: 0.1 # width factor, multiplied by tile dimension gives the region width around seam which will be smoothed
-
-# TrainModels:
-#   model:
-#     class_path : Padim
-#   trainer:
-#     max_epochs: 1
-#     callbacks:
-#       - class_path: lightning.pytorch.callbacks.EarlyStopping
-#         init_args:
-#           patience: 10
-#           monitor: pixel_val_AUROC
-#           mode: max
-
-# data:
-#   class_path: anomalib.data.MVTecAD
-#   init_args:
-#     name: MVTecADShort
-#     root: ./datasets/MVTecADShort
-#     category: bottle
-#     train_batch_size: 10
-#     eval_batch_size: 10
-#     num_workers: 8
-#     train_augmentations: null
-#     val_augmentations: null
-#     test_augmentations: null
-#     augmentations: null
-#     test_split_mode: from_dir
-#     test_split_ratio: 0.1
-#     val_split_mode: same_as_test
-#     val_split_ratio: 0.5
-

@@ -9,10 +9,8 @@ logging:
   logFileName: "general.log"
 
 model:
-  name: "padim"
-  config: padim.yaml
-  # weights_path/trainingDir pin an exact prior run. Omit both (as here) to have
-  # them resolved automatically from results/ at load time, picking the run
+  name: "InpFormer"
+  config: InpFormer.yaml
   # per `selection`: "latest" (newest complete run) or "best" (highest
   # image_F1Score among complete runs, read from each run's metric_results.csv).
   selection: "best"
@@ -22,7 +20,7 @@ tiling:
   config: "TiledEnsemble.yaml"
 
 trainer:
-  config: "Training_padim.yaml"
+  config: "Training_InpFormer.yaml"
 
 inferencer:
   config: "Prediction.yaml"

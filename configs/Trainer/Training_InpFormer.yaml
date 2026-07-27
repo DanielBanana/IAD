@@ -1,28 +1,35 @@
 # https://anomalib.readthedocs.io/en/v2.2.0/markdown/guides/reference/models/image/patchcore.html
 train_batch_size: auto
 eval_batch_size: auto
-max_epochs: 100 # default for inp_former needs 100? epoch
-max_workers: 8
-test_split_mode: "from_dir" # none, from_dir, synthetic, train_data
-test_split_ratio: 0.2
-val_split_mode: "same_as_test" # none, same_as_text, from_train, from_test, synthetic (from train_data)
-val_split_ratio: 0.5 # not used if same_as_text
-num_sanity_val_steps: 0 #(skip validation sanity checks)
-gradient_clip_val: 0 #(no gradient clipping needed)
-accelerator: "auto"  # Also tried cpu, gpu, auto
-inference_mode: False
-check_val_every_n_epoch: 20
+max_epochs: 10                   # default for inp_former needs 100? epoch
+max_workers: 8                    # maximum number of workers that load the dataset
+test_split_mode: "from_dir"       # none, from_dir, synthetic, train_data
+test_split_ratio: 0.2             # Ratio of test dataset size to full dataset size
+val_split_mode: "from_test"       # none, same_as_test, from_train, from_test, synthetic (from train_data)
+val_split_ratio: 0.5              # Ratio of validation dataset size to test dataset size, ignored if mode is same_as_test
+num_sanity_val_steps: 0           #(skip validation sanity checks)
+gradient_clip_val: 0              # (no gradient clipping needed)
+accelerator: "auto"               # 'cpu', 'cuda' (for nvidia gpu), 'mps' (for apple), 'auto' (determine automatically), 
+inference_mode: False             #
+check_val_every_n_epoch: 5      # After how many training epochs should the validation be run?
 
-# crop_size: [128,128] # default for inp_former only needs 256x256 crops, not used for patchcore
+logger:
+  class_path: anomalib.loggers.AnomalibWandbLogger
+  init_args:
+    project: "Glas 4.0"
+    entity: daniel-pommer-technische-hochschule-n-rnberg-georg-simon-ohm
+    offline: false
+
 callbacks:
+  - class_path: anomalib.callbacks.TimerCallback
   - class_path: lightning.pytorch.callbacks.EarlyStopping
     init_args:
-      patience: 10
+      patience: 1
       monitor: image_AUROC
       mode: max
   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
       monitor: image_AUROC
       mode: max
-      save_top_k: 1 # only overwrite the checkpoint when the monitored metric improves, instead of every epoch
-      every_n_epochs: 5
+      save_top_k: 1              # only overwrite the checkpoint when the monitored metric improves, instead of every epoch
+      every_n_epochs: 5.         # How often check if you have to save weights to disk (saving weights takes time and slows down training)
