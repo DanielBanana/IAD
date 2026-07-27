@@ -28,6 +28,7 @@ full training stack.
 
 from __future__ import annotations
 
+import logging
 import csv
 import hashlib
 import json
@@ -44,7 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     # Avoid a hard import-time dependency / circular import; these are only
     # needed for type hints.
-    from userConfigs import (
+    from setup import (
         ModelConfig,
         TrainerConfig,
         DataModuleConfig,
@@ -52,10 +53,7 @@ if TYPE_CHECKING:
         DatasetSession,
     )
 
-import logging
-
 logger = logging.getLogger(__name__)
-
 
 # --------------------------------------------------------------------------- #
 # Run identity
@@ -406,7 +404,7 @@ def _tiling_config_from_manifest_dict(tiling_dict: Dict[str, Any]) -> "TilingPip
     """Rebuild a TilingPipelineConfig from the manifest's serialized tiling
     section. Imported lazily to avoid a hard dependency at module import time.
     """
-    from userConfigs import TilingPipelineConfig  # local import: see module docstring
+    from setup import TilingPipelineConfig  # local import: see module docstring
     return TilingPipelineConfig.extract_tiling_pipeline_params({"tiling": tiling_dict})
 
 

@@ -1,9 +1,14 @@
+"""
+Contains functions that help with managing the checkpoints of the tiled ensemble.
+"""
+# GENERAL
 import math
 import re
 from pathlib import Path
 from typing import List, Tuple
-from userConfigs import TilingPipelineConfig
 
+# OWN CODE
+from setup import TilingPipelineConfig
 
 def compute_tile_grid(
     image_size: Tuple[int, int],

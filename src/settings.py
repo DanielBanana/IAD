@@ -1,3 +1,5 @@
+"Predifinied information about test datasets"
+
 DATASETS = ["custom", "mvtecad", "kolektor", "visa", "btech"]     # TODO. "isp-ad", "wfdd", (not in anomalib)
 CATEGORIES = {
     "custom" : ["simple"],
@@ -54,14 +56,14 @@ DEFAULT_TEXT_CONFIG = {
     "background": (0, 0, 0, 128),
 }
 
-ENGINE_PARAMS = ["max_epochs", "min_epochs", "log_every_n_steps"]
-DATAMODULE_PARAMS = ["train_batch_size",
-                   "train_augmentations",
-                   "val_augmentations", 
-                   "test_augmentations",
-                   "augmentations",
-                   "val_split_mode",
-                   "val_split_ratio",
-                   "test_split_mode",
-                   "test_split_ratio",
-                   "seed"]
+# ENGINE_PARAMS = ["max_epochs", "min_epochs", "log_every_n_steps"]
+# DATAMODULE_PARAMS = ["train_batch_size",
+#                    "train_augmentations",
+#                    "val_augmentations", 
+#                    "test_augmentations",
+#                    "augmentations",
+#                    "val_split_mode",
+#                    "val_split_ratio",
+#                    "test_split_mode",
+#                    "test_split_ratio",
+#                    "seed"]

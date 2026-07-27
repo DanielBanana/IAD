@@ -20,9 +20,6 @@ Example:
 
 import torch
 from lightning import LightningModule, Trainer
-from lightning.pytorch import Callback
-from torch import nn
-
 from anomalib.data import Batch, InferenceBatch
 from anomalib.metrics import F1AdaptiveThreshold, MinMax
 from anomalib.post_processing import PostProcessor

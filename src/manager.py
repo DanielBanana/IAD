@@ -2,24 +2,47 @@
 Main class for managing the Industrial Anomaly Detection (IAD)
 """
 # GENERAL
-import wandb
 import os
 import yaml
 import shutil
-import copy
 import datetime
 import logging
 import logging.config
 import sys
 import threading
 import warnings
+from datetime import datetime
 from logging.config import dictConfig
 from enum import IntFlag, auto
 from pathlib import Path
-from typing import Any, Callable, List, Tuple, Optional, Dict, Type
+from typing import Any, Callable, List, Tuple, Optional, Dict
 from dataclasses import dataclass
 from typing import Optional
 
+# ANOMALIB
+from anomalib.models.components import AnomalibModule
+from anomalib.loggers import AnomalibWandbLogger
+from anomalib.callbacks import ModelCheckpoint, TimerCallback
+from anomalib.visualization import ImageVisualizer
+
+# PYTROCH LIGHTNING
+from lightning.pytorch import Callback
+# from lightning.pytorch.callbacks import TQDMProgressBar
+
+# OWN FILES
+from setup import create_model
+from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
+from tiling.tilingCheckpoints import checkTiledCheckpointsExist
+from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles
+from run_paths import resolve_checkpoint_paths, resolve_wandb_manifest_dir, resolve_output_dir
+from setup import (
+    DataModuleConfig,
+    TrainerConfig, 
+    ModelConfig, 
+    TilingPipelineConfig, 
+    Product, loadProductFromYaml, 
+    DatasetSession, 
+)
 # Windows WDDM adds ~100-200 KB of C stack per CUDA call, exhausting the 1 MB main
 # thread stack that python.exe ships with.  Run GPU-heavy pipelines in a thread that
 # has a generous stack so the kernel cannot crash mid-training.
@@ -46,55 +69,6 @@ def _run_in_large_stack(fn: Callable) -> None:
 
     if exc:
         raise exc[0]
-from jsonargparse import ArgumentParser, Namespace
-import hashlib
-import json
-import uuid
-from datetime import datetime
-
-# FIFTYONE
-import fiftyone.core.dataset as fod
-import fiftyone as fo
-import fiftyone.zoo as foz # zoo datasets and models
-import fiftyone.brain as fob # ML methods
-from fiftyone import ViewField as F # helper for defining views
-from fiftyone import DatasetView
-
-# ANOMALIB
-from anomalib.deploy import ExportType
-from anomalib.callbacks import LoadModelCallback
-from anomalib.models.components import AnomalibModule
-from anomalib.loggers import AnomalibWandbLogger
-from anomalib.callbacks import ModelCheckpoint, TimerCallback
-from anomalib.engine import Engine
-from anomalib.data.utils import Split
-from anomalib.data import PredictDataset
-from anomalib.visualization import ImageVisualizer
-
-# PYTROCH LIGHTNING
-from lightning.pytorch import Callback
-from lightning.pytorch.callbacks import TQDMProgressBar
-
-# OWN FILES
-from data.anomaly_datasets import importDataset, exportDataset, FODataModule, FODataset, importPredictDataset
-from setup import mapNameToModule, create_model
-from settings import MODELS, ENGINE_PARAMS, DATAMODULE_PARAMS
-from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
-from tiling.tilingCheckpoints import checkTiledCheckpointsExist
-from utils import find_first_file, exclude_from_logger
-from userConfigs import (
-    DatasetConfig, 
-    DataModuleConfig,
-    TrainerConfig, 
-    ModelConfig, 
-    BaseModelConfig, 
-    TilingPipelineConfig, 
-    Product, loadProductFromYaml, 
-    DatasetSession, 
-    loadModelConfig,
-    TilingPipelineConfig
-)
-from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles
 
 os.environ["TRUST_REMOTE_CODE"] = "1"
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm.models.layers")
@@ -102,83 +76,12 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="openvino.
 
 # --- pure path resolution, no side effects, independently testable ---
 
-def resolve_output_dir(
-    baseOutputDir: Path,
-    datasetName: str,
-    modelName: str,
-    runId: str,
-    category: Optional[str] = None,
-    tiling: bool = True,
-) -> Path:
-    """
-    Where new artifacts for a run should be written: base/dataset/[category]/model/[tiled
 
-
-    Parameters
-    ----------
-    baseOutputDir : Path
-        Base of the output directories usually .../results
-    datasetName : str
-        Name of the dataset to save the results for
-    modelName : str
-        Name of the model to save the results for
-    category : Optional[str] (optional)
-        Name of the category in the dataset the results are fore. Default is `None`
-    tiling : bool (optional)
-        Is a TiledEnsemble model used? I.e. is there a model for each tile being trained because the images are too large. Default is `True`
-
-    Returns
-    -------
-    _name_ : Path
-        The path where results are stored
-    """
-    path = baseOutputDir / datasetName
-    if category is not None:
-        path = path / category
-    path = path / modelName
-    if tiling:
-        path = path / "tiled"
-    return path / "runs" / runId
-
-
-def resolve_checkpoint_paths(
-    trainingDir: Path,
-    # ckptFileName: str = "best",
-    # ckptSuffix: str = ".ckpt",
-) -> Path:
-    """
-    Where checkpoints live *within* a given (already-resolved) training run directory.
-
-    Deliberately takes an explicit `trainingDir` rather than recomputing it —
-    # inference reads checkpoints from a *different* prior run than the one it writes to.
-
-    Parameters
-    ----------
-    trainingDir : Path
-        Ouput_dir usualy given by resolve_output_dir
-    ckptFileName : str (optional)
-        Name of the file. Default is `"best"`
-    ckptSuffix : str (optional)
-        Suffix of the file. Default is `".ckpt"`
-
-    Returns
-    -------
-    _name_ : Path
-        Direcetory of the checkpoints
-    _name_ : Path
-        File if not tiled checkpoints; if tiled just use the dir because there are multiple files needed
-    """
-    ckptDir = trainingDir / "checkpoints"
-    return ckptDir
-    # ckptPath = ckptDir / (ckptFileName + ckptSuffix)
-    # return ckptDir, ckptPath
 
 @dataclass
 class RunContext:
     runName: str
     outputDir: Path
-    # ckptDir: Path
-    # ckptPath: Path
 
 class ManagerError(Exception):
     """Base class for all AnomalyDetectionManager errors."""
@@ -202,6 +105,14 @@ class ConfigError(ManagerError):
     """Raised for malformed or unresolvable configuration (YAML, paths, etc.)."""
 
 class ManagerState(IntFlag):
+    """
+    Gives feedback about the state of the Manager and what kind of command can be run. train()/eval()/inference()
+
+    Parameters
+    ----------
+    IntFlag : _type_
+        Support for integer based flags
+    """
     NONE = 0
     MODEL_LOADED = auto()
     DATASET_LOADED = auto()
@@ -262,20 +173,15 @@ class AnomalyDetectionManager:
             os.makedirs(outputDir)
         self.baseOutputDir:Path = outputDir
         self.outputDir:Path = outputDir
+        self.runDir:Path|None = None
         self.configDir:Path = configDir
-
         self.ckptDir: Optional[Path] = None
-        # self.ckptPath: Optional[Path] = None
-        # self.ckptFileName:str = "best"
-        # self.ckptSuffix:str = ".ckpt"
 
         self.model: Optional[AnomalibModule] = None
         self.modelConfig: Optional[ModelConfig] = None
         self.modelConfigPath: Optional[Path] = None
         self.modelTrainingDir: Optional[Path] = None
-        # self.modelCallbacks: Dict[str, Callback]
 
-        # self.engine: Optional[Engine] = None
         self.trainerConfig: Optional[TrainerConfig] = None
         self.trainerConfigPath: Optional[Path] = None
         self.inferencerConfig: Optional[TrainerConfig] = None
@@ -285,13 +191,14 @@ class AnomalyDetectionManager:
         self.tilingPipelineConfig: Optional[TilingPipelineConfig] = None
         self.isTilingSetup = False
 
-        # self.version:int = 0
-        # self.versionName:str = "version"
-        # self.runDir:Path|None = None
-
         self.datasetSession: Optional[DatasetSession] = None
   
         self.setupLogging()
+
+    @property
+    def wandbManifestDir(self) -> Path:
+        """Where per-tile W&B run-id manifests for the current run live (see run_paths.py)."""
+        return resolve_wandb_manifest_dir(self.outputDir)
 
     def attachDatasetSession(self, datasetSession: DatasetSession) -> None:
         """
@@ -328,7 +235,6 @@ class AnomalyDetectionManager:
         """
         dateAndTime: str = datetime.now().strftime("%Y%m%d-%H%M")
         return dateAndTime
-
 
     def setupLogging(self, logDir: Optional[Path] = None, logConfigFile: Optional[Path] = None):
         """
@@ -666,82 +572,8 @@ class AnomalyDetectionManager:
                 manager.state |= ManagerState.CHECKPOINT_AVAILABLE | ManagerState.TRAINED
         manager._apply_visualizer_output_dir(outputPath)
 
-        # runID = generate_run_id
-        # outputDir = resolve_output_dir(
-        #     baseOutputDir=manager.baseOutputDir, datasetName=product.datasetConfig.name,
-        #     modelName=product.modelConfig.name, category=product.datasetConfig.category, tiling=True,
-        # )
-
         return manager, product
-
-    def setupTrainingCallbacks(self):
-        """
-        Setup all callbacks for the training process. Currently these are a checkpoint and a timer callback.
-
-
-        Returns
-        -------
-        _name_ : Dict[str,Callback]
-            Dictionary of name and callback
-        """
-        # if self.ckptDir is not None:
-        #     if not self.ckptDir.exists():
-        #         self.ckptDir.mkdir(parents=True)
-        #     self.ckptPath = self.ckptDir / (self.ckptFileName + self.ckptSuffix)
-        # else:
-        #     AttributeError(f"ckptDir is both None")
-
-        # checkpointCallback = ModelCheckpoint(
-        #     dirpath=self.ckptDir,
-        #     filename=self.ckptFileName,
-        #     monitor="image_F1AdaptiveThreshold",  # val_loss not found?
-        #     verbose=True,
-        #     save_top_k=1,  # Save only the best model
-        #     mode="min",  # Save the model with the minimum training loss,
-        #     enable_version_counter=False
-        # )
         
-        # graphCallback = GraphLogger()
-        timerCallback = TimerCallback()
-        # progressBar = TQDMProgressBar(refresh_rate=0)
-
-        self.callbacks:Dict[str, Callback] = {
-            # "progress_bar": progressBar,
-            # "checkpoint": checkpointCallback,generate_run_id
-            # "graph": graphCallback,
-            "timer": timerCallback
-        }
-
-        return self.callbacks
-    
-    def setupWandBLogger(self, runName:str, runDir:Path, version:int|str):
-        """
-        Setup the weights and biases logger for this training run
-
-        Parameters
-        ----------
-        runName : str
-            Name of this specific run. Ideally identfying
-        runDir : Path
-            Directory of where to save the logger files
-        version : int | str
-            Increasing version index
-        """
-        self.runLogger = AnomalibWandbLogger(
-            name=runName,
-            save_dir=runDir,
-            version=str(version),
-            project="Glas 4.0",
-            offline=False,
-            entity="daniel-pommer-technische-hochschule-n-rnberg-georg-simon-ohm",
-        )
-
-    # def _check_before_training(self) -> AnomalibModule:
-    #     """Just check the model — dataset validation is caller's responsibility."""
-    #     if self.model is None:
-    #         raise AttributeError("Expected model attribute to be set")
-    #     return self.model
-
     def loadCheckpoint(self, path:Optional[Path], tilingPipelineConfig: TilingPipelineConfig):
         """
         Check if the checkpoints for a tiledEnsemble run (eval, inference) are available at the expected directory
@@ -887,7 +719,6 @@ class AnomalyDetectionManager:
         """
 
         datamodule = datasetSession.setupDatamodule(dataModuleConfig, self.outputDir)
-        # gtAvail:bool = True if len(datasetSession.FO_Dataset.exists("ground_truth"))>0 else False
 
         logger.info(f"Dataset used for training: {datasetSession.FO_Dataset}")
 
@@ -937,14 +768,11 @@ class AnomalyDetectionManager:
         _name_ : RunContext
             Run name, output directory, checkpoint directory, (checkpoint path, not applicable for tiled)
         """
-        # if ManagerState.RUN_PREPARED in self.state:
-        #     return (RunContext(runName=self.runId, outputDir=self.outputDir))
         runId = generate_run_id(runLabel)
         outputDir = resolve_output_dir(
             baseOutputDir=self.baseOutputDir, datasetName=datasetSession.datasetName,
             modelName=modelConfig.name, runId=runId, category=datasetSession.category, tiling=True,
         )
-        # ckptDir = resolve_checkpoint_paths(outputDir)
 
         effective_config = serialize_effective_config(trainerConfig, modelConfig, datamoduleConfig, tilingPipelineConfig, datasetSession)
         print(effective_config)
@@ -953,7 +781,6 @@ class AnomalyDetectionManager:
         self.outputDir, self.runId = outputDir, runId
         self._apply_visualizer_output_dir(outputDir)
         self.setupTiling(tilingPipelineConfig)
-        self.setupTrainingCallbacks()
         self.state |= ManagerState.RUN_PREPARED
 
         return RunContext(runName=runId, outputDir=outputDir)

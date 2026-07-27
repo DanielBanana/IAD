@@ -1,5 +1,5 @@
 """
-Tiled ensemble training pipeline.
+Implements the 
 """
 # Copyright (C) 2024-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
@@ -13,7 +13,7 @@ import os
 import contextlib
 import functools
 
-from typing import TYPE_CHECKING, List, Any, Dict, Literal
+from typing import List, Any, Dict, Literal
 from collections.abc import Generator
 from itertools import product
 from pathlib import Path
@@ -50,13 +50,8 @@ from anomalib.pipelines.tiled_ensemble.components import (
 )
 from anomalib.pipelines.types import GATHERED_RESULTS, PREV_STAGE_RESULT
 
-# OWN FILES
-# try:
-#     base = Path(__file__).parent
-#     ad_base = Path(__file__).parent.parent
-# except NameError:
-#     base = Path.cwd()  # fallback for notebooks/REPL
-from userConfigs import DataModuleConfig, ModelConfig, TrainerConfig, TilingPipelineConfig
+# OWN CODE
+from setup import DataModuleConfig, ModelConfig, TrainerConfig, TilingPipelineConfig
 from data.anomaly_datasets import importDataset, FODataModule, FODataset, AnomalibDataset
 from tiling.ensemble_engine import AOITiledEnsembleEngine
 from tiling.ensemble_tiling import EnsembleTiler, TileCollater
@@ -261,11 +256,18 @@ class TrainTiledEnsemble(Pipeline):
         self.tilingPipelineConfig=tilingPipelineConfig
         self.modelConfig=modelConfig
         self.trainerConfig=trainerConfig
+        self.visualisationArgs:dict[str,Any] = {
+            "field_size": self.tilingPipelineConfig.image_size,
+            "fields": ["image", "pred_mask"] if not self.gtAvail else ["image", "gt_mask", "pred_mask"],
+            "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
+        }
+
         logger.debug(f"TrainTiledEnsemble: DataModuleConfig: {dataModuleConfig}")
         logger.debug(f"TrainTiledEnsemble: tilingPipelineConfig: {tilingPipelineConfig}")
         logger.debug(f"TrainTiledEnsemble: modelConfig: {modelConfig}")
         logger.debug(f"TrainTiledEnsemble: trainerConfig: {trainerConfig}")
         logger.debug(f"TrainTiledEnsemble: rootDir: {rootDir}")
+        logger.debug(f"TrainTiledEnsemble: visualisationARgs: {self.visualisationArgs}")
 
     def _setup_runners(self, args: Dict[str,Any]) -> List[Runner]:
         """Setup the runners for the pipeline.
@@ -281,11 +283,6 @@ class TrainTiledEnsemble(Pipeline):
         seed:int = args.get("seed", 42)
         logger.info("TrainTiledPipeline: No seed given in arguments, using 42")
 
-        visualisation_args:dict[str,Any] = {
-            "field_size": self.tilingPipelineConfig.image_size,
-            "fields": ["image", "pred_mask"] if not self.gtAvail else ["image", "gt_mask", "pred_mask"],
-            "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
-        }
 
         runners: List[Runner] = []
         valSplitMode:ValSplitMode = self.dataModuleConfig.val_split_mode
@@ -384,7 +381,7 @@ class TrainTiledEnsemble(Pipeline):
         )
 
         # 9. Visualise on disk
-        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir, dataset_name=self.datamodule.name, category=self.datamodule.category, visualisation_args=visualisation_args, pred_mask_image=True)))
+        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=self.visualisationArgs, predMaskImage=True)))
 
         # 9 (optional) Associate the results back with the fiftyone dataset where they come from so they can be visualised
         if self.FO_Dataset is not None:
@@ -392,21 +389,14 @@ class TrainTiledEnsemble(Pipeline):
 
         return runners
 
-    # def setFODataset(self, dataset:FODataset) -> None:
-    #     self.dataset = dataset
-
     def run(self, args: Namespace | None = None) -> None:
         """Run the pipeline.
 
         Args:
             args (Namespace): Arguments to run the pipeline. These are the args returned by ArgumentParser.
         """
-        # if args is None:
-        # pipeline_args = self._get_args(args)
         runners:List[Runner] = self._setup_runners({})
-        # redirect_logs(logFile) # dont know what it does
         previous_results: PREV_STAGE_RESULT = None
-
         for runner in runners:
             try:
                 job_args = _pipeline_trainer_kwargs(self.trainerConfig)
@@ -461,7 +451,7 @@ class EvalTiledEnsemble(Pipeline):
         normalization_stage = NormalizationStage(args.get("normalization_stage", NormalizationStage.IMAGE))
         thresholding_stage = ThresholdingStage(args.get("thresholding_stage", ThresholdingStage.IMAGE))
 
-        visualisation_args:dict[str,Any] = {
+        visualisationArgs:dict[str,Any] = {
             "field_size": self.tilingPipelineConfig.image_size,
             "fields": ["image", "pred_mask"] if not self.gtAvail else ["image", "gt_mask", "pred_mask"],
             "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
@@ -534,7 +524,7 @@ class EvalTiledEnsemble(Pipeline):
         )
 
         # 7. Visualise on disk
-        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir, dataset_name=self.datamodule.name, category=self.datamodule.category, visualisation_args=visualisation_args, pred_mask_image=True)))
+        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=visualisationArgs, predMaskImage=True)))
 
         # 8. Visualize predictions in 51
         runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name)))
@@ -670,7 +660,7 @@ class PredTiledEnsemble(Pipeline):
    
         seed:int = int(args.get("seed", 0))        
 
-        visualisation_args:dict[str,Any] = {
+        visualisationArgs:dict[str,Any] = {
             "field_size": self.tilingPipelineConfig.image_size,
             "fields": ["image", "pred_mask"] if not self.gtAvail else ["image", "gt_mask", "pred_mask"],
             "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
@@ -728,7 +718,7 @@ class PredTiledEnsemble(Pipeline):
         if self.tilingPipelineConfig.thresholding_stage == ThresholdingStage.IMAGE:
             runners.append(SerialRunner(AOIThresholdingJobGenerator(self.trainingDir, self.tilingPipelineConfig.normalization_stage)))
 
-        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.root_dir, dataset_name=self.datamodule.name, category=self.datamodule.category, visualisation_args=visualisation_args, pred_mask_image=True)))
+        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.root_dir, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=visualisationArgs, predMaskImage=True)))
 
         # # 6. visualize predictions
         # if self.dataset is not None:

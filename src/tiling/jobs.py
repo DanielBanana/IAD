@@ -4,45 +4,38 @@
 # SPDX-License-Identifier: Apache-2.0
 # Changed by Daniel Pommer, TH Nuremberg, 2026
 
+# GENERAL
 import json
 import logging
 import fiftyone as fo
 import numpy as np
 import pandas as pd
 import torch
-from numpy.typing import NDArray
 
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from tqdm import tqdm
 from typing import Any, Tuple, Dict, List
-from torch import Tensor
-from torch import nn
+from torch import Tensor, nn
 from torchvision.tv_tensors import Image
 from torchvision.transforms.v2 import Compose, Resize, Transform
 from lightning import LightningModule, Trainer
 from torchvision.tv_tensors import Mask
-from userConfigs import DataModuleConfig
 
+
+
+# ANOMALIB
 from anomalib.post_processing import PostProcessor
-from anomalib.pre_processing import PreProcessor
-from anomalib.metrics import AUROC
-from anomalib.visualization import ImageVisualizer, visualize_image_item, Visualizer
-
+from anomalib.visualization import ImageVisualizer, visualize_image_item
 from anomalib.visualization.image.item_visualizer import (
     DEFAULT_FIELDS_CONFIG,
     DEFAULT_OVERLAY_FIELDS_CONFIG,
     DEFAULT_TEXT_CONFIG,
 )
 from anomalib.data import ImageBatch, ImageItem
-from anomalib.data.dataclasses.torch.base import Batch, DatasetItem, ToNumpyMixin
-from anomalib.utils.normalization.min_max import normalize
-from anomalib.models import AnomalibModule, get_model
 from anomalib.pre_processing.utils.transform import get_exportable_transform
 from anomalib.utils.path import generate_output_filename
-from anomalib.metrics import Evaluator
-
 from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
 from anomalib.pipelines.tiled_ensemble.components.thresholding import ThresholdingJob
 from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler
@@ -50,11 +43,13 @@ from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import 
 from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import EnsemblePredictions
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
+from anomalib.models.components import AnomalibModule
+from anomalib.utils.normalization.min_max import normalize
 
-# OWN FILES
-from data.anomaly_datasets import FODataModule, FODataset
-from userConfigs import TilingPipelineConfig, ModelConfig
-from setup import create_model
+
+# OWN CODE
+from data.anomaly_datasets import FODataModule
+from setup import create_model, TilingPipelineConfig, ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -690,7 +685,7 @@ class AOIVisualizationJob(Job):
 
     name = "VisualizeOnDisk"
 
-    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, dataset_name:str, category:str, visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
+    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, datasetName:str, category:str, visualisationArgs:dict[str,Any], predMaskImage:bool=False) -> None:
         super().__init__()
         # self.predictions = prev_stage_result
         if isinstance(prev_stage_result, Tuple):
@@ -698,37 +693,37 @@ class AOIVisualizationJob(Job):
             self.rest = prev_stage_result[1:]
         else:
             self.predictions = prev_stage_result
-        self.predMaskImage = pred_mask_image # If this is true the prediction mask is saved as a standalone image
+        self.predMaskImage = predMaskImage # If this is true the prediction mask is saved as a standalone image
         self.root_dir = root_dir / "images"
 
-        self.fields = visualisation_args.get("fields", None)
+        self.fields = visualisationArgs.get("fields", None)
         if self.fields is None:
             self.fields = ["image", "pred_mask", "gt_mask"]
-        self.overlay_fields = visualisation_args.get("overlay_fields", None)
+        self.overlay_fields = visualisationArgs.get("overlay_fields", None)
         if self.overlay_fields is None:
             self.overlay_fields = [("image", ["pred_mask"]), ("image", ["anomaly_map"])]
-        self.field_size = visualisation_args.get("field_size", None)
+        self.field_size = visualisationArgs.get("field_size", None)
         if self.field_size is None:
             self.field_size = [256,256]
             logger.warning(f"Field size was not given for VisualisationJob. The Visualisation is probaly not right; size of (256,256) is assumed")
 
-        self.fields_config = visualisation_args.get("fields_config", None)
+        self.fields_config = visualisationArgs.get("fields_config", None)
         if self.fields_config is None:
             self.fields_config = DEFAULT_FIELDS_CONFIG
 
-        self.overlay_fields_config = visualisation_args.get("overlay_fields_config", None)
+        self.overlay_fields_config = visualisationArgs.get("overlay_fields_config", None)
         if self.overlay_fields_config is None:
             self.overlay_fields_config = DEFAULT_OVERLAY_FIELDS_CONFIG
 
-        self.text_config = visualisation_args.get("text_config", None)
+        self.text_config = visualisationArgs.get("text_config", None)
         if self.text_config is None:
             self.text_config = DEFAULT_TEXT_CONFIG
 
-        self.dataset_name = dataset_name
+        self.datasetName = datasetName
         self.category = category
-        # if self.dataset_name is None:da
+        # if self.datasetName is None:da
         #     # if not specified, take class name
-        #     self.dataset_name = data_args["class_path"].split(".")[-1]
+        #     self.datasetName = data_args["class_path"].split(".")[-1]
         # self.category = dataModuleConfig
 
     def run(self, task_id: int | None = None) -> list[Any]:
@@ -785,7 +780,7 @@ class AOIVisualizationJob(Job):
                 filename = generate_output_filename(
                     input_path=data.image_path or "",
                     output_path=self.root_dir,
-                    dataset_name=self.dataset_name,
+                    dataset_name=self.datasetName,
                     category=self.category,
                 )
                 logger.debug(f"{self.name}: filename: {filename}")
@@ -833,12 +828,12 @@ class AOIVisualizationJobGenerator(JobGenerator):
         root_dir (Path): Root directory where images will be saved (root/images).
     """
 
-    def __init__(self, root_dir: Path, dataset_name:str, category:str, visualisation_args:dict[str,Any], pred_mask_image:bool=False) -> None:
+    def __init__(self, root_dir: Path, datasetName:str, category:str, visualisationArgs:dict[str,Any], predMaskImage:bool=False) -> None:
         self.root_dir = root_dir
-        self.dataset_name = dataset_name
+        self.datasetName = datasetName
         self.category = category
-        self.visualisation_args = visualisation_args
-        self.pred_mask_image = pred_mask_image
+        self.visualisationArgs = visualisationArgs
+        self.predMaskImage = predMaskImage
 
     @property
     def job_class(self) -> type:
@@ -862,7 +857,7 @@ class AOIVisualizationJobGenerator(JobGenerator):
         del args  # args not used here
 
         if prev_stage_result is not None:
-            yield AOIVisualizationJob(prev_stage_result, root_dir=self.root_dir, dataset_name=self.dataset_name, category=self.category, visualisation_args=self.visualisation_args, pred_mask_image=self.pred_mask_image)
+            yield AOIVisualizationJob(prev_stage_result, root_dir=self.root_dir, datasetName=self.datasetName, category=self.category, visualisationArgs=self.visualisationArgs, predMaskImage=self.predMaskImage)
         else:
             msg = "Visualization job requires tile level predictions from previous step."
             raise ValueError(msg)
@@ -890,9 +885,9 @@ class AOIFiftyOneVisJob(Job):
         self.FO_Dataset = FO_Dataset
         self.datamodule = datamodule
         self.modelName = modelName
-        self.dataset_name = datamodule.name
+        self.datasetName = datamodule.name
         self.category:str = datamodule.category # dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
-        logger.debug(f"{self.name}: Dataset name: {self.dataset_name}")
+        logger.debug(f"{self.name}: Dataset name: {self.datasetName}")
         logger.debug(f"{self.name}: Selected Category: {self.category}")
         logger.debug(f"{self.name}: Model name: {self.modelName}")
 
@@ -925,6 +920,10 @@ class AOIFiftyOneVisJob(Job):
                     sample[f"pred_defect_mask_{self.modelName}"] = fo.Segmentation(mask=mask.data.numpy().squeeze().astype(np.uint8)*255)
                 except:
                     logger.error("Segmentation prediction mask not available.")
+                if isinstance(sample.tags, list):
+                    sample.tags.append("predicted")
+                else:
+                    sample.tags = ["predicted"]
                 sample.save()
         self.FO_Dataset.tag_samples("predicted")
         self.FO_Dataset.tags.append("predicted")
