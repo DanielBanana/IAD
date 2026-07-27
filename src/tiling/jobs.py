@@ -921,12 +921,13 @@ class AOIFiftyOneVisJob(Job):
                 except:
                     logger.error("Segmentation prediction mask not available.")
                 if isinstance(sample.tags, list):
-                    sample.tags.append("predicted")
+                    if "predicted" not in sample.tags:
+                        sample.tags.append("predicted")
                 else:
                     sample.tags = ["predicted"]
                 sample.save()
-        self.FO_Dataset.tag_samples("predicted")
-        self.FO_Dataset.tags.append("predicted")
+        # self.FO_Dataset.tag_samples("predicted")
+        # self.FO_Dataset.tags.append("predicted")
 
         if self.rest is not None:
             return self.predictions, self.rest

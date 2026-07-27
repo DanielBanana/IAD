@@ -130,6 +130,15 @@ def _trust_own_checkpoints():
     finally:
         torch.load = original_load
 
+@contextlib.contextmanager
+def weights_only_false():
+    original = torch.load
+    torch.load = functools.partial(torch.load, weights_only=False)
+    try:
+        yield
+    finally:
+        torch.load = original
+
 
 def probe_optimal_batch_size(
     model: AnomalibModule,
@@ -199,6 +208,7 @@ def probe_optimal_batch_size(
         enable_progress_bar=False,
         enable_model_summary=False,
         max_epochs=1,
+
     )
     tuner = Tuner(probe_trainer)
 
@@ -211,7 +221,7 @@ def probe_optimal_batch_size(
         # `weights_only=True` default refuses to unpickle. The checkpoint is one we wrote
         # ourselves a few lines above, in this same process, so trusting it here (unlike an
         # arbitrary external checkpoint) is safe - relax just this restore accordingly.
-        with _trust_own_checkpoints():
+        with weights_only_false():
             optimal = tuner.scale_batch_size(
                 probe_model,
                 datamodule=datamodule,
@@ -222,11 +232,11 @@ def probe_optimal_batch_size(
                 steps_per_trial=1,
                 max_trials=6,
                 margin=0.1,
-                max_val=max_val,
+                max_val=max_val,    
             )
     except Exception:
         logger.exception(f"Batch size probe for '{batch_arg_name}' failed; falling back to 1.")
-        optimal = 1
+        optimal = 14
     finally:
         del probe_model, probe_trainer, tuner
         if torch.cuda.is_available():

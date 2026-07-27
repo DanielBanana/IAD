@@ -212,7 +212,7 @@ class AnomalyDetectionManager:
         """
         self.datasetSession = datasetSession
         self.state |= ManagerState.DATASET_LOADED
-        logger.info(f"Attached dataset '{datasetSession.datasetName}' (category={datasetSession.category})")
+        logger.info(f"Attached dataset '{datasetSession.datasetName}' (category={datasetSession.category[0] if datasetSession.category else None}) to manager.")
 
     def _resolve_dataset_session(self, datasetSession: Optional[DatasetSession]) -> DatasetSession:
         if datasetSession is not None:
@@ -771,7 +771,7 @@ class AnomalyDetectionManager:
         runId = generate_run_id(runLabel)
         outputDir = resolve_output_dir(
             baseOutputDir=self.baseOutputDir, datasetName=datasetSession.datasetName,
-            modelName=modelConfig.name, runId=runId, category=datasetSession.category, tiling=True,
+            modelName=modelConfig.name, runId=runId, category=datasetSession.category[0] if datasetSession.category else None, tiling=True,
         )
 
         effective_config = serialize_effective_config(trainerConfig, modelConfig, datamoduleConfig, tilingPipelineConfig, datasetSession)
@@ -822,9 +822,9 @@ class AnomalyDetectionManager:
     ) -> None:
         """Evaluate the current model on the current dataset. Tiled ensemble only for now."""
         datasetSession = self._resolve_dataset_session(datasetSession)
-        if modelTrainingDir is not None:
-            self.modelTrainingDir = modelTrainingDir
-        else:
+        # if modelTrainingDir is not None:
+        #     self.modelTrainingDir = modelTrainingDir
+        if modelTrainingDir is None:
             if self.modelTrainingDir is None:
                 raise AttributeError("Need a modelTrainingDir and neither attribute nor class atrribute are available")
             modelTrainingDir = self.modelTrainingDir

@@ -815,19 +815,20 @@ class DatasetSession:
         else:
             if category not in (self.categories or []):
                 raise AttributeError(f"Category {category} not found! Available: {self.categories}")
-            self.category = category
+            self.category = [category]
             self.FO_DatasetView:fo.DatasetView = self.FO_Dataset.filter_labels("category", F("label").is_in([category]))
         
-        logger.info(f"Selected category: {self.category}, {len(self.FO_DatasetView)} images")
+        logger.info(f"Selected category: {category}, {len(self.FO_DatasetView)} images")
 
         if self.FO_DatasetView is not None:
             try:
-                FO_Dataset_:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+                FO_Dataset_:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{category}", persistent=True)
             except ValueError as e:
+
                 logger.error(e)
-                logger.info(f"Deleting {self.datasetName}-{self.category} from database and reloading.")
-                fo.delete_dataset(f"{self.datasetName}-{self.category}")
-                FO_Dataset_:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{self.category}", persistent=False)
+                logger.info(f"Deleting {self.datasetName}-{category} from database and reloading.")
+                fo.delete_dataset(f"{self.datasetName}-{category}")
+                FO_Dataset_:fo.Dataset = self.FO_DatasetView.clone(name=f"{self.datasetName}-{category}", persistent=True)
             finally:
                 if isinstance(FO_Dataset_, fo.Dataset):
                     FO_Dataset = FO_Dataset_
