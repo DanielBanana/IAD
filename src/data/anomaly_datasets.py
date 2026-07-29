@@ -1179,10 +1179,12 @@ def make_fiftyone_dataset(
     logger.debug(f"Empty DataFrame created with columns: {_samples}")
 
     for idx, sample in enumerate(samples):
-        sampleDict = {column: None for column in columns}
+        sampleDict: dict[str, Any] = {column: None for column in columns}
 
         # Determine filepath for logging
         filepath = getattr(sample, "filepath", None)
+
+        logger.debug(f"Sample {idx} filepath: {filepath}")
 
         # Skip sample if filepath is missing or empty
         if not filepath:
@@ -1200,10 +1202,13 @@ def make_fiftyone_dataset(
             sampleDict["mask_path"] = sample["mask_path"]
         else:
             sample["mask_path"] = ""
-            sampleDict["mask_path"] = ""
+            sampleDict["mask_path"] = None
 
         # Skip if label_index is missing for this individual sample
-        label_index_val = sample.get("label_index", None)
+        try:
+            label_index_val = sample["label_index"]
+        except Exception as e:
+            label_index_val = None
         if label_index_val is None:
             reason = "missing label_index"
             logger.warning(f"Skipping sample {idx}: {reason}; filepath: {filepath}")
@@ -1211,7 +1216,10 @@ def make_fiftyone_dataset(
         sampleDict["label_index"] = label_index_val
 
         # Skip if split is missing for this individual sample
-        split_val = sample.get("split", None)
+        try:
+            split_val = sample["split"]
+        except Exception as e:
+            split_val = None
         if split_val is None:
             reason = "missing split"
             logger.warning(f"Skipping sample {idx}: {reason}; filepath: {filepath}")
@@ -1242,6 +1250,8 @@ def make_fiftyone_dataset(
 
         # Append processed sample to DataFrame
         _samples.loc[len(_samples)] = sampleDict
+
+    logger.debug(f"Dataframe before root ({root}) application: {_samples}")
 
     #######################
     ### Post-processing ###
@@ -1277,12 +1287,19 @@ def make_fiftyone_dataset(
     else:
         _samples.attrs["task"] = "classification" 
 
+    logger.debug(f"Dataframe after conversion from FiftyOne dataset: {_samples}")
+
     # Get the dataframe for the split.
     if split:
-        logger.debug(f"Filtering samples for split: {split}")
-        _samples = _samples[_samples.split == split]
+        from enum import Enum
+        if isinstance(split, Enum):
+            _split = split.value
+        else:
+            _split = split
+        logger.debug(f"Filtering samples for split: {_split}")
+        _samples = _samples[_samples.split == _split]
         _samples = _samples.reset_index(drop=True)
-        logger.debug(f"Filtered samples for split {split}: {_samples.shape[0]}")
+        logger.debug(f"Filtered samples for split {_split}: {_samples.shape[0]}")
 
     return _samples
 

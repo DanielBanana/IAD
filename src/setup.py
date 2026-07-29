@@ -903,7 +903,7 @@ class DatasetSession:
                 dm_kwargs[key] = 2
         datamodule = FODataModule(name=self.datasetName, samples=self.FO_Dataset, root=outputPath, **dm_kwargs)
         try:
-            datamodule._setup()
+            datamodule.setup()
             self.datamodule = datamodule
             return datamodule
         except ValueError as e:
