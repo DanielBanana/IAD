@@ -11,8 +11,10 @@ logging:
 model:
   name: "InpFormer"
   config: InpFormer.yaml
-  weights_path: "results/MVTecAD/bottle/InpFormer/tiled/checkpoints"
-  trainingDir: "../results/MVTecAD/bottle/InpFormer/tiled"
+  # weights_path: "results/MVTecAD/bottle/InpFormer/tiled/checkpoints"
+  # trainingDir: "../results/MVTecAD/bottle/InpFormer/tiled"
+  selection: "best"
+
 
 tiling:
   enable: True

@@ -42,6 +42,11 @@ from setup import (
     TilingPipelineConfig, 
     Product, loadProductFromYaml, 
     DatasetSession, 
+    SetupError,
+    DatamoduleError,
+    DatasetSessionError,
+    ModelError,
+    TilingPipelineError
 )
 # Windows WDDM adds ~100-200 KB of C stack per CUDA call, exhausting the 1 MB main
 # thread stack that python.exe ships with.  Run GPU-heavy pipelines in a thread that
@@ -194,6 +199,9 @@ class AnomalyDetectionManager:
         self.datasetSession: Optional[DatasetSession] = None
   
         self.setupLogging()
+
+    def __repr__(self):
+        return "\n".join(f"{key}={value}" for key, value in self.__dict__.items())
 
     @property
     def wandbManifestDir(self) -> Path:
@@ -558,6 +566,10 @@ class AnomalyDetectionManager:
         """
         product = loadProductFromYaml(productConfigPath, config_dir=configDir, baseOutputDir=outputPath)
         manager = cls(outputDir=outputPath, configDir=configDir)
+        import timm
+        # print("TIMM LOADED FROM:", timm.__file__)
+        # print("MODEL REGISTERED:", 'vit_base_patch14_reg4_dinov2' in timm.list_models())
+        # print("ENCODER_NAME REPR:", repr(product.modelConfig.to_dict().get("encoder_name")))
         manager.generateModel(modelConfig=product.modelConfig)
         manager.setupTiling(product.tilingPipelineConfig)
         manager.tilingConfigPath = product.tilingConfigPath
@@ -625,7 +637,16 @@ class AnomalyDetectionManager:
         tilingPipelineConfig : TilingPipelineConfig
             How the tiling process works (E.g. tile size, stride,...)
         """
-        datamodule = datasetSession.setupDatamodule(datamoduleConfig, self.outputDir)
+        try:
+            datamodule = datasetSession.setupDatamodule(datamoduleConfig, self.outputDir)
+            logger.info(f"Datamodule set up successfully: {datamodule}")
+        except DatamoduleError as e:
+            logger.error(f"Error occurred while setting up datamodule: {e}")
+            raise e
+        except Exception as e:
+            logger.error(f"Unexpected error occurred: {e}")
+            raise e
+
         gtAvail:bool = True if len(datasetSession.FO_Dataset.exists("ground_truth"))>0 else False
 
         logger.info(f"Dataset used for training: {datasetSession.FO_Dataset}")

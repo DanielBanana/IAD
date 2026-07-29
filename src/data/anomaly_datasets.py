@@ -783,38 +783,68 @@ class FODataModule(AnomalibDataModule):
 
     def train_dataloader(self) -> DataLoader:
         """Get training dataloader (see `_dataloader_kwargs` for why this differs from the base)."""
-        return DataLoader(
-            dataset=self.train_data,
-            shuffle=True,
-            batch_size=self.train_batch_size,
-            num_workers=self.num_workers,
-            collate_fn=self.external_collate_fn or self.train_data.collate_fn,
+        dataloader_kwargs = {
+            "dataset": self.train_data,
+            "shuffle": True,
+            "batch_size": self.train_batch_size,
+            "num_workers": self.num_workers,
+            "collate_fn": self.external_collate_fn or self.train_data.collate_fn,
             **self._dataloader_kwargs(),
-        )
+        }
+        try:
+            return DataLoader(**dataloader_kwargs)
+        except ValueError as e:
+            exit()
+            logger.error(f"train_dataloader - Dataset: {self.train_data.samples}")
+            logger.error(f"Error occurred while creating training dataloader with params: {dataloader_kwargs}")
+            logger.error(f"datamodule: {self}")
+            logger.error(f"Original error: {e}")
+            exit()
+            raise e
 
     def val_dataloader(self) -> DataLoader:
         """Get validation dataloader (see `_dataloader_kwargs` for why this differs from the base)."""
-        return DataLoader(
-            dataset=self.val_data,
-            shuffle=False,
-            batch_size=self.eval_batch_size,
-            num_workers=self.num_workers,
-            collate_fn=self.external_collate_fn or self.val_data.collate_fn,
+        dataloader_kwargs = {
+            "dataset": self.val_data,
+            "shuffle": False,
+            "batch_size": self.eval_batch_size,
+            "num_workers": self.num_workers,
+            "collate_fn": self.external_collate_fn or self.val_data.collate_fn,
             **self._dataloader_kwargs(),
-        )
+        }
+        try:
+            return DataLoader(**dataloader_kwargs)
+        except ValueError as e:
+            logger.error(f"val_dataloader - Dataset: {self.val_data.samples}")
+            logger.error(f"Error occurred while creating validation dataloader with params: {dataloader_kwargs}")
+            logger.error(f"datamodule: {self}")
+            logger.error(f"Original error: {e}")
+            exit()
+
+            raise e
 
     def test_dataloader(self) -> DataLoader:
         """Get test dataloader (see `_dataloader_kwargs` for why this differs from the base)."""
-        return DataLoader(
-            dataset=self.test_data,
-            shuffle=False,
-            batch_size=self.eval_batch_size,
-            num_workers=self.num_workers,
-            collate_fn=self.external_collate_fn or self.test_data.collate_fn,
+        dataloader_kwargs = {
+            "dataset": self.test_data,
+            "shuffle": False,
+            "batch_size": self.eval_batch_size,
+            "num_workers": self.num_workers,
+            "collate_fn": self.external_collate_fn or self.test_data.collate_fn,
             **self._dataloader_kwargs(),
-        )
+        }
+        try:
+            return DataLoader(**dataloader_kwargs)
+        except ValueError as e:
+            logger.error(f"test_dataloader - Dataset: {self.test_data.samples}")
+            logger.error(f"Error occurred while creating test dataloader with params: {dataloader_kwargs}")
+            logger.error(f"datamodule: {self}")
+            logger.error(f"Original error: {e}")
+            raise e
+
 
     def _setup(self, _stage: str | None = None) -> None:
+
         self.train_data = FODataset(
             name=self.name,
             samples=self._unprocessed_samples,
@@ -828,6 +858,10 @@ class FODataModule(AnomalibDataModule):
             split=Split.TEST,
             root=self.root,
         )
+
+        logger.info(f"Train samples: {len(self.train_data)}")
+        logger.info(f"Test samples: {len(self.test_data)}")
+        logger.info(f"Unprocessed samples: {len(self._unprocessed_samples)}")
 
     @property
     def name(self) -> str:
@@ -997,11 +1031,15 @@ class FODataset(AnomalibDataset):
         self._name = name
         self.split = split
         self.root = root
+        logger.debug(f"Loading FiftyOne dataset '{self.name}' with {len(samples)} samples. Split: {self.split}, Root: {self.root}")
+        logger.debug(f"Samples: {samples}")
         self.samples = make_fiftyone_dataset(
             samples=samples,
             root=self.root,
             split=self.split,
         )
+        logger.debug(f"Processed samples: {self.samples}")
+
 
     @property
     def name(self) -> str:
@@ -1107,7 +1145,7 @@ def make_fiftyone_dataset(
     ### Pre-processing ###
     ######################
 
-    # Convert to pandas DataFrame if dictionary or list is given
+    logger.debug(f"Creating FiftyOne dataset with {len(samples)} samples. Split: {split}, Root: {root}")
 
     # Check if samples contain image_path column
     columns:Set[str] = set()
@@ -1134,54 +1172,75 @@ def make_fiftyone_dataset(
     columns.add("label")
     columns.add("id")
 
+    logger.debug(f"Columns for dataset: {columns}")
+
     _samples = pd.DataFrame(columns=list(columns))
 
-    for sample in samples:
+    logger.debug(f"Empty DataFrame created with columns: {_samples}")
+
+    for idx, sample in enumerate(samples):
         sampleDict = {column: None for column in columns}
-        if not hasattr(sample, "filepath"):
-            msg = "The samples must each contain a filepath that is not empty."
-            raise ValueError(msg)
-        else:
-            sample["image_path"] = sample.filepath
-            sampleDict["image_path"] = sample["image_path"] 
-            
-        if sample.get_field_schema().get("mask_path", None) is not None:
+
+        # Determine filepath for logging
+        filepath = getattr(sample, "filepath", None)
+
+        # Skip sample if filepath is missing or empty
+        if not filepath:
+            reason = "missing filepath"
+            logger.warning(f"Skipping sample {idx}: {reason}; filepath: {filepath}")
+            continue
+
+        # Populate image path
+        sample["image_path"] = filepath
+        sampleDict["image_path"] = sample["image_path"]
+
+        # Mask path may be absent for classification tasks
+        if sample.get_field_schema().get("mask_path", None) is not None and getattr(sample, "mask_path", None):
             sample["mask_path"] = sample.mask_path
-            sampleDict["mask_path"] = sample["mask_path"] 
+            sampleDict["mask_path"] = sample["mask_path"]
         else:
             sample["mask_path"] = ""
             sampleDict["mask_path"] = ""
 
-        # if sample.tags;
-        if sample.get_field_schema().get("label_index", None) is None:
-            msg = "The samples must each contain a 'label_index' field. Either 0:('normal'), 1:('abnormal') or -1('unknown')."
-            raise ValueError(msg)
-        else:
-            sampleDict["label_index"] = sample["label_index"] 
+        # Skip if label_index is missing for this individual sample
+        label_index_val = sample.get("label_index", None)
+        if label_index_val is None:
+            reason = "missing label_index"
+            logger.warning(f"Skipping sample {idx}: {reason}; filepath: {filepath}")
+            continue
+        sampleDict["label_index"] = label_index_val
 
-        if sample.get_field_schema().get("split", None) is None:
-            msg = "The samples must each contain a 'split' field. Either 'train', 'val', 'test'."
-            raise ValueError(msg)
-        else:
-            sampleDict["split"] = sample["split"] 
+        # Skip if split is missing for this individual sample
+        split_val = sample.get("split", None)
+        if split_val is None:
+            reason = "missing split"
+            logger.warning(f"Skipping sample {idx}: {reason}; filepath: {filepath}")
+            continue
+        sampleDict["split"] = split_val
 
-        if sample.label_index == LabelName.NORMAL:
-            if sample.split == Split.TRAIN:
-                sample["label"] = DirType.NORMAL
-            elif sample.split == Split.TEST:
-                sample["label"] = DirType.NORMAL_TEST
-            elif sample.split == Split.VAL:
-                sample["label"] = None
-        elif sample.label_index == LabelName.ABNORMAL:
-            sample["label"] = DirType.ABNORMAL
-        elif sample.label_index == LabelName.UNKNOWN:
-            sample["label"] = "unknown" # TODO: does this work?
-            # raise ValueError("sample.label_index can`t be UNKNOWN.")
-        else:
-            raise ValueError(f"sample.label_index {sample.label_index} not known.")
-        sampleDict["label"] = sample["label"] 
+        # Determine DirType/label mapping; if inconsistent, skip sample
+        try:
+            if sample.label_index == LabelName.NORMAL:
+                if sample.split == Split.TRAIN:
+                    sample["label"] = DirType.NORMAL
+                elif sample.split == Split.TEST:
+                    sample["label"] = DirType.NORMAL_TEST
+                elif sample.split == Split.VAL:
+                    sample["label"] = None
+            elif sample.label_index == LabelName.ABNORMAL:
+                sample["label"] = DirType.ABNORMAL
+            elif sample.label_index == LabelName.UNKNOWN:
+                sample["label"] = "unknown"
+            else:
+                raise ValueError(f"sample.label_index {sample.label_index} not known.")
+        except Exception as e:
+            logger.warning(f"Skipping sample {idx}: invalid label/split mapping: {e}; filepath: {filepath}")
+            continue
+
+        sampleDict["label"] = sample["label"]
         sampleDict["id"] = sample["id"]
-        # newDict = {column: sample[column] for column in columns} # TODO Fix if mask are not available
+
+        # Append processed sample to DataFrame
         _samples.loc[len(_samples)] = sampleDict
 
     #######################
@@ -1220,8 +1279,10 @@ def make_fiftyone_dataset(
 
     # Get the dataframe for the split.
     if split:
+        logger.debug(f"Filtering samples for split: {split}")
         _samples = _samples[_samples.split == split]
         _samples = _samples.reset_index(drop=True)
+        logger.debug(f"Filtered samples for split {split}: {_samples.shape[0]}")
 
     return _samples
 

@@ -57,6 +57,14 @@ from fiftyone import ViewField as F # helper for defining views
 
 logger = logging.getLogger(__name__)
 
+class SetupError(Exception):
+    """Base class for all AnomalyDetectionManager errors."""
+
+class DatamoduleError(SetupError): ...
+class DatasetSessionError(SetupError): ...
+class ModelError(SetupError): ...
+class TilingPipelineError(SetupError): ...
+
 class VisualizerType(Enum):
     train = 0
     valNoGT = 1
@@ -884,6 +892,7 @@ class DatasetSession:
         """
 
         if self.datasetName == "":
+            logger.warning("Dataset name is empty. Using 'unnamedDataset' as dataset name.")
             self.datasetName = "unnamedDataset"
         dm_kwargs = datamoduleConfig.to_dict()
         # "auto" batch sizes are resolved later, per tile, by the tiled ensemble pipeline
@@ -893,10 +902,19 @@ class DatasetSession:
             if dm_kwargs.get(key) == "auto":
                 dm_kwargs[key] = 2
         datamodule = FODataModule(name=self.datasetName, samples=self.FO_Dataset, root=outputPath, **dm_kwargs)
-        datamodule.setup()
-        self.datamodule = datamodule
-        return self.datamodule
-    
+        try:
+            datamodule._setup()
+            self.datamodule = datamodule
+            return datamodule
+        except ValueError as e:
+            logger.error(f"dm_kwargs: {dm_kwargs}, datamodule: {datamodule}")
+            logger.error(f"Name: {self.datasetName}, Root: {outputPath}")
+            logger.error(f"Dataset: {self.FO_Dataset}")
+            logger.error(f"Error occurred while setting up datamodule: {e}")
+            raise DatamoduleError(f"Error occurred while setting up datamodule. Datamodule exists but not setup: {e}")
+        except Exception as e:
+            raise DatamoduleError(f"Unexpected error occurred while setting up datamodule: {e}")
+            
     def generateEmbedding(self) -> None:
         """Generate an embedding of the dataset into a 2d space to visually inspect the data. Opens a voxel51 session
 
@@ -930,10 +948,10 @@ class TilingPipelineConfig:
     image_size: Tuple[int, int]
     tile_size: Tuple[int, int]
     stride: Tuple[int, int]
+    seam_smoothing: SeamSmoothingConfig 
     root_dir:Optional[Path] = None
     normalization_stage: NormalizationStage = NormalizationStage.IMAGE
     thresholding_stage: ThresholdingStage = ThresholdingStage.IMAGE
-    seam_smoothing: SeamSmoothingConfig = SeamSmoothingConfig()
 
     def to_dict(self) -> Dict[str, Any]:
         d:Dict[str,Any] = {}
@@ -966,9 +984,9 @@ class TilingPipelineConfig:
             return value
         if isinstance(value, dict):
             return SeamSmoothingConfig(
-                apply=bool(value.get("apply", False)),
-                sigma=int(value.get("sigma", 1)),
-                width=float(value.get("width", 0.0)),
+                apply=bool(value.get("apply", True)),
+                sigma=int(value.get("sigma", 2)),
+                width=float(value.get("width", 0.1)),
             )
         raise TypeError(f"seam_smoothing must be a SeamSmoothingConfig or a dict. Instead got {type(value)}")
 
@@ -1353,6 +1371,9 @@ class Product:
         for k,v in self.__dict__.items():
             string += f"{k}: {v}\n"
         return string
+
+    def __repr__(self):
+        return "\n".join(f"{key}={value}" for key, value in self.__dict__.items())
 
     def refresh_training_dir(self, baseOutputDir: Path) -> Optional[Path]:
         """

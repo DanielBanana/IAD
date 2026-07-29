@@ -2,7 +2,7 @@
 train_batch_size: auto
 eval_batch_size: auto
 max_epochs: 10                   # default for inp_former needs 100? epoch
-max_workers: 0                    # maximum number of workers that load the dataset
+max_workers: 1                    # maximum number of workers that load the dataset
 test_split_mode: "from_dir"       # none, from_dir, synthetic, train_data
 test_split_ratio: 0.2             # Ratio of test dataset size to full dataset size
 val_split_mode: "from_test"       # none, same_as_test, from_train, from_test, synthetic (from train_data)
