@@ -706,6 +706,9 @@ class DatasetSession:
     AL_PredictDataset: Optional[PredictDataset] = None
     currentSession: Optional[fo.Session] = None  # fo.Session
 
+    def __len__(self):
+        return self.FO_Dataset.__len__
+
     @classmethod
     def loadDatasetFromConfig(cls, config:DatasetConfig, overwrite:bool=True, merge:bool=False, split:Optional[Tuple[str]]=None) -> "DatasetSession":
         session = cls.loadDatasetFromDisk(datasetPath=config.path,
@@ -719,8 +722,8 @@ class DatasetSession:
     @classmethod
     def loadDatasetFromDatabase(cls, datasetName: str) -> "DatasetSession":
         """Load a dataset from MongoDB and track it here."""
-        if fo.dataset_exists(datasetName):
-            FO_Dataset = fo.load_dataset(datasetName)
+        if fo.dataset_exists(name=datasetName):
+            FO_Dataset = fo.load_dataset(name=datasetName)
 
             try:
                 session:DatasetSession = cls(datasetName=datasetName, categories=list(FO_Dataset.distinct("category.label")), FO_DatasetOriginal=FO_Dataset, FO_Dataset=FO_Dataset)
@@ -974,8 +977,14 @@ class TilingPipelineConfig:
 
     @classmethod
     def _parse_tuple(cls, value: Any, name: str) -> Tuple[int, int]:
-        if isinstance(value, (list, tuple)) and len(value) == 2:
-            return (int(value[0]), int(value[1]))
+        try: 
+            len(value)
+        except:
+            logger.error("Length can no be determined.")
+            raise ValueError(f"Length can no be determined.")
+        if isinstance(value, (List, Tuple)):
+            if value.__len__ == 2:
+                return (int(value[0]), int(value[1]))
         raise ValueError(f"{name} must be a tuple/list of length 2")
 
     @classmethod
