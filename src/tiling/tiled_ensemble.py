@@ -24,7 +24,7 @@ from torchvision.transforms.v2 import Compose, Resize, Transform
 
 
 # ANOMALIB
-from anomalib.data import AnomalibDataModule, ImageBatch, get_datamodule, AnomalibDataModule, PredictDataset
+from anomalib.data import AnomalibDataModule, ImageBatch, get_datamodule, AnomalibDataModule, PredictDataset as InferenceDataset
 from anomalib.data.utils import ValSplitMode, TestSplitMode
 from anomalib.models import AnomalibModule, get_model
 from anomalib.pre_processing import PreProcessor
@@ -38,7 +38,7 @@ from anomalib.utils.logging import redirect_logs
 from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.components.base import Pipeline, Runner
 from anomalib.pipelines.components.runners import ParallelRunner, SerialRunner
-from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, PredictData, ThresholdingStage
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, PredictData as InferenceData, ThresholdingStage
 from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_engine import TiledEnsembleEngine
 from anomalib.pipelines.tiled_ensemble.components.utils.prediction_data import EnsemblePredictions
 from anomalib.pipelines.tiled_ensemble.components import (
@@ -68,6 +68,7 @@ from tiling.jobs import (
 )
 import platform
 
+class PipelineError(RuntimeError): ...
 
 logger = logging.getLogger(__name__)
 
@@ -333,9 +334,11 @@ class TrainTiledEnsemble(Pipeline):
             logger.warning("No validation set provided, skipping statistics calculation.")
             return runners
 
+        mode = InferenceData.VAL
+
         # 2. predict using validation data
-        predict_job_generator = PredictJobGenerator(
-            data_source=PredictData.VAL,
+        predict_job_generator = InferenceJobGenerator(
+            data_source=mode,
             seed=seed,
             accelerator=self.trainerConfig.accelerator,
             root_dir=self.rootDir,
@@ -344,7 +347,7 @@ class TrainTiledEnsemble(Pipeline):
             datamodule=self.datamodule,
             modelConfig=self.modelConfig,
             normalization_stage=self.tilingPipelineConfig.normalization_stage,
-            predictionDataset=None
+            inferenceDataset=None
         )
 
         if self.trainerConfig.accelerator == "cuda" and n_parallel > 1:
@@ -391,11 +394,11 @@ class TrainTiledEnsemble(Pipeline):
         )
 
         # 9. Visualise on disk
-        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=self.visualisationArgs, predMaskImage=True)))
+        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir/mode.value, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=self.visualisationArgs, predMaskImage=True)))
 
         # 9 (optional) Associate the results back with the fiftyone dataset where they come from so they can be visualised
         if self.FO_Dataset is not None:
-            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name)))
+            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name, split=mode)))
 
         return runners
 
@@ -467,77 +470,98 @@ class EvalTiledEnsemble(Pipeline):
             "overlay_fields": [("image", ["anomaly_map"]), ("image", ["pred_mask"])] if not self.gtAvail else [("image", ["anomaly_map"]), ("image", ["gt_mask"]), ("image", ["pred_mask"])]
         }
         
-        valSplitMode:ValSplitMode = self.dataModuleConfig.val_split_mode
-        if valSplitMode == TestSplitMode.NONE:
-            logger.info("Test split mode set to `none`, skipping test phase.")
-            return runners
+        validationSplit: ValSplitMode = self.dataModuleConfig.val_split_mode
+        testSplit: TestSplitMode = self.dataModuleConfig.test_split_mode
+        modes: List[InferenceData] = []
 
-        predict_job_generator = PredictJobGenerator(
-            data_source=PredictData.TEST,
-            seed=seed,
-            accelerator=self.evalConfig.accelerator,
-            root_dir=self.rootDir,
-            tilingPipelineConfig=self.tilingPipelineConfig,
-            dataModuleConfig=self.dataModuleConfig,
-            datamodule=self.datamodule,
-            modelConfig=self.modelConfig,
-            normalization_stage=normalization_stage,
-            ckptPath=ckptPath,
-            predictionDataset=None
-        )
-        # 1. predict using test data
-        _n_eval_jobs = torch.cuda.device_count()
-        if self.evalConfig.accelerator == "cuda" and _n_eval_jobs > 1:
-            runners.append(
-                ParallelRunner(
-                    predict_job_generator,
-                    n_jobs=_n_eval_jobs,
-                ),
-            )
+        logger.info(f"Validation split for evaluation pipeline is set to: {validationSplit}")
+        if validationSplit == ValSplitMode.NONE:
+            logger.info("This means no Evaluation is done on the to determine the decision tresholds")
         else:
+            logger.info("Evaluating performance of trained model to determine decision thresholds")
+            modes.append(InferenceData.VAL)
+
+        logger.info(f"Validation split for evaluation pipeline is set to: {testSplit}")
+        if testSplit == TestSplitMode.NONE:
+            logger.info("This means no Testing is done on the determine the quality of the threshold on unseen data")
+        else:
+            if validationSplit is ValSplitMode.NONE:
+                raise PipelineError(f"Can not run test if no validation ran before hand.")
+            else:
+                logger.info("Testing to determine quality on unseen data")
+                modes.append(InferenceData.TEST)
+
+        for mode in modes:
+
+            inferenceJobGenerator = InferenceJobGenerator(
+                data_source=mode,
+                seed=seed,
+                accelerator=self.evalConfig.accelerator,
+                root_dir=self.rootDir,
+                tilingPipelineConfig=self.tilingPipelineConfig,
+                dataModuleConfig=self.dataModuleConfig,
+                datamodule=self.datamodule,
+                modelConfig=self.modelConfig,
+                normalization_stage=normalization_stage,
+                ckptPath=ckptPath,
+                inferenceDataset=None
+            )
+
+            # 1. predict using test data
+            _nEvalJobs = torch.cuda.device_count()
+            if self.evalConfig.accelerator == "cuda" and _nEvalJobs > 1:
+                runners.append(
+                    ParallelRunner(
+                        inferenceJobGenerator,
+                        n_jobs=_nEvalJobs,
+                    ),
+                )
+            else:
+                runners.append(
+                    SerialRunner(
+                        inferenceJobGenerator,
+                    ),
+                )
+            # 2. merge predictions
+            runners.append(SerialRunner(AOIMergeJobGenerator(tilingPipelineConfig=self.tilingPipelineConfig)))
+
+            # 3. (optional) smooth seams
+            if self.tilingPipelineConfig.seam_smoothing.apply:
+                runners.append(
+                    SerialRunner(
+                        AOISmoothingJobGenerator(accelerator="cpu", tilingPipelineConfig=self.tilingPipelineConfig),
+                    ),
+                )
+
+            # 4. (optional) normalize
+            if normalization_stage == NormalizationStage.IMAGE:
+                logger.info(f"Taking stats for Nomalization from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
+                runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent)))
+
+            if mode is InferenceData.VAL:
+                # 5. (optional) threshold to get labels from scores
+                if thresholding_stage == ThresholdingStage.IMAGE:
+                    logger.info(f"Taking stats for Thresholding from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
+                    runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent, normalization_stage)))
+
+            # 6. calculate accuracy metrics
             runners.append(
                 SerialRunner(
-                    predict_job_generator,
-                ),
-            )
-        # 2. merge predictions
-        runners.append(SerialRunner(AOIMergeJobGenerator(tilingPipelineConfig=self.tilingPipelineConfig)))
-
-        # 3. (optional) smooth seams
-        if self.tilingPipelineConfig.seam_smoothing.apply:
-            runners.append(
-                SerialRunner(
-                    AOISmoothingJobGenerator(accelerator="cpu", tilingPipelineConfig=self.tilingPipelineConfig),
+                    AOIMetricsCalculationJobGenerator(
+                        accelerator=self.evalConfig.accelerator,
+                        root_dir=self.rootDir,
+                        modelConfig=self.modelConfig,
+                        tile_size=self.tilingPipelineConfig.tile_size,
+                        saveName=f"metric_results_{mode.value}.csv"
+                    ),
                 ),
             )
 
-        # 4. (optional) normalize
-        if normalization_stage == NormalizationStage.IMAGE:
-            logger.info(f"Taking stats for Nomalization from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
-            runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent)))
+            # 7. Visualise on disk
+            runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir/mode.value, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=visualisationArgs, predMaskImage=True)))
 
-        # 5. (optional) threshold to get labels from scores
-        if thresholding_stage == ThresholdingStage.IMAGE:
-            logger.info(f"Taking stats for Thresholding from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
-            runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent, normalization_stage)))
-
-        # 6. calculate accuracy metrics
-        runners.append(
-            SerialRunner(
-                AOIMetricsCalculationJobGenerator(
-                    accelerator=self.evalConfig.accelerator,
-                    root_dir=self.rootDir,
-                    modelConfig=self.modelConfig,
-                    tile_size=self.tilingPipelineConfig.tile_size
-                ),
-            ),
-        )
-
-        # 7. Visualise on disk
-        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=visualisationArgs, predMaskImage=True)))
-
-        # 8. Visualize predictions in 51
-        runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name)))
+            # 8. Visualize predictions in 51
+            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name, split=mode)))
 
         return runners
     
@@ -589,7 +613,7 @@ class EvalTiledEnsemble(Pipeline):
                     # f" Please check {logFile} for more details.",
                 )
 
-class PredTiledEnsemble(Pipeline):
+class InferenceTiledEnsemble(Pipeline):
     """Tiled ensemble evaluation pipeline.
 
     Args:
@@ -600,7 +624,7 @@ class PredTiledEnsemble(Pipeline):
                  root_dir: Path,
                  trainingDir:Path,
                  ckptDir:Path,
-                 predictDataset:PredictDataset,
+                 inferenceDataset:InferenceDataset,
                  dataset:fo.Dataset,
                  datamodule:FODataModule,
                  dataModuleConfig:DataModuleConfig,
@@ -619,7 +643,7 @@ class PredTiledEnsemble(Pipeline):
             Directory where the model was trained for the  stats.json file for the threshold data
         ckptDir : Path
             Directory where the model weights were stored during training
-        predictDataset : PredictDataset
+        inferenceDataset : InferenceDataset
             Dataset that contains the data for which a prediction should be made
         dataset : fo.Dataset
             Dataset the prediction data belongs to; ususally the training images (i.e. dataset is all images of a specific product) both training data and prediction data belong to that general dataset
@@ -644,7 +668,7 @@ class PredTiledEnsemble(Pipeline):
         logger.info(f"Checkpoint directory: {ckptDir}")
         logger.info(f"Stats directory: {trainingDir}")
         self.dataset:fo.Dataset = dataset
-        self.predictDataset = predictDataset
+        self.inferenceDataset = inferenceDataset
         self.datamodule:FODataModule = datamodule
         self.dataModuleConfig = dataModuleConfig
         self.tilingPipelineConfig = tilingPipelineConfig
@@ -680,8 +704,8 @@ class PredTiledEnsemble(Pipeline):
 
         logger.debug("Setting up JobGenerators")
 
-        predict_job_generator = PredictJobGenerator(
-            PredictData.TEST,
+        inferenceJobGenerator = InferenceJobGenerator(
+            InferenceData.VAL,
             seed=seed,
             accelerator=self.inferencerConfig.accelerator,
             root_dir=self.root_dir,
@@ -690,7 +714,7 @@ class PredTiledEnsemble(Pipeline):
             modelConfig=self.modelConfig,
             normalization_stage=self.tilingPipelineConfig.normalization_stage,
             datamodule=self.datamodule,
-            predictionDataset=self.predictDataset,
+            inferenceDataset=self.inferenceDataset,
             ckptPath=self.ckptDir
         )
 
@@ -699,14 +723,14 @@ class PredTiledEnsemble(Pipeline):
         if self.inferencerConfig.accelerator == "cuda" and _n_inf_jobs > 1:
             runners.append(
                 ParallelRunner(
-                    predict_job_generator,
+                    inferenceJobGenerator,
                     n_jobs=_n_inf_jobs,
                 ),
             )
         else:
             runners.append(
                 SerialRunner(
-                    predict_job_generator,
+                    inferenceJobGenerator,
                 ),
             )
         # 2. merge predictions
@@ -1002,7 +1026,7 @@ class TrainModelJobGenerator(JobGenerator):
             )
 
 """Tiled ensemble - ensemble prediction job."""
-class PredictJob(Job):
+class InferenceJob(Job):
     """Job for generating predictions with individual models in the tiled ensemble.
 
     Args:
@@ -1028,7 +1052,7 @@ class PredictJob(Job):
         root_dir: Path,
         tile_index: tuple[int, int],
         normalization_stage: str,
-        dataloader: DataLoader[FODataset|PredictDataset],
+        dataloader: DataLoader[FODataset|InferenceDataset],
         model: AnomalibModule | None,
         engine: AOITiledEnsembleEngine | None,
         ckpt_path: Path | None,
@@ -1107,17 +1131,17 @@ class PredictJob(Job):
     def save(results: GATHERED_RESULTS) -> None:
         """This stage doesn't save anything."""
 
-class PredictJobGenerator(JobGenerator):
+class InferenceJobGenerator(JobGenerator):
     """Generator for predict job that uses individual models to predict for each tile location.
 
     Args:
         root_dir (Path): Root directory to save checkpoints, stats and images.
-        data_source (PredictData): Whether to predict on validation set. If false use test set.
+        data_source (InferenceData): Whether to predict on validation set. If false use test set.
     """
 
     def __init__(
         self,
-        data_source: PredictData,
+        data_source: InferenceData,
         seed: int,
         accelerator: str,
         root_dir: Path,
@@ -1126,7 +1150,7 @@ class PredictJobGenerator(JobGenerator):
         modelConfig: ModelConfig,
         normalization_stage: NormalizationStage,
         datamodule:AnomalibDataModule|None,
-        predictionDataset:PredictDataset|None,
+        inferenceDataset:InferenceDataset|None,
         ckptPath:Path|None=None
     ) -> None:
         self.data_source = data_source
@@ -1139,18 +1163,18 @@ class PredictJobGenerator(JobGenerator):
         self.normalization_stage = normalization_stage
         self.datamodule = datamodule
         self.ckptPath = ckptPath
-        self.predictionDataset = predictionDataset
+        self.inferenceDataset = inferenceDataset
 
     @property
     def job_class(self) -> type:
         """Return the job class."""
-        return PredictJob
+        return InferenceJob
 
     def generate_jobs(
         self,
         args: dict[str,Any] | None = None,
         prev_stage_result: PREV_STAGE_RESULT = None,
-    ) -> Generator[PredictJob, None, None]:
+    ) -> Generator[InferenceJob, None, None]:
         """Generate predict jobs for each tile location.
 
         Args:
@@ -1212,10 +1236,11 @@ class PredictJobGenerator(JobGenerator):
                 
 
             # pick the dataloader based on predict data
-            if self.predictionDataset:
-                logger.info(f"Dataset for dataloader: {self.predictionDataset}")
-                dataloader:DataLoader[PredictDataset] = DataLoader(self.predictionDataset, collate_fn=datamodule.external_collate_fn, pin_memory=True)
+            if self.inferenceDataset:
+                logger.info(f"Using a specified dataset for dataloader (usually the case during inference): {self.inferenceDataset}")
+                dataloader:DataLoader[InferenceDataset] = DataLoader(self.inferenceDataset, collate_fn=datamodule.external_collate_fn, pin_memory=True)
             else:
+                logger.info(f"Creating a dataloader from a datamodule. Usually the case during the validation or test step.")
                 if self.dataModuleConfig is not None and self.dataModuleConfig.eval_batch_size == "auto":
                     resolved_accelerator = self.accelerator if self.accelerator != "auto" else get_device()
                     datamodule.eval_batch_size = probe_optimal_batch_size(
@@ -1224,15 +1249,19 @@ class PredictJobGenerator(JobGenerator):
                         accelerator=resolved_accelerator,
                         root_dir=self.root_dir,
                         batch_arg_name="eval_batch_size",
-                        method="validate" if self.data_source == PredictData.VAL else "test",
+                        method="validate" if self.data_source == InferenceData.VAL else "test",
                     )
 
+
                 dataloader = datamodule.test_dataloader()
-                if self.data_source == PredictData.VAL:
+                if self.data_source == InferenceData.VAL:
                     dataloader = datamodule.val_dataloader()
+                    print(f"Using validation data")
+                else:
+                    print(f"Using test data")
 
             # pass root_dir to engine so all models in ensemble have the same root dir
-            yield PredictJob(
+            yield InferenceJob(
                 accelerator=self.accelerator,
                 seed=self.seed,
                 root_dir=self.root_dir,
@@ -1363,12 +1392,12 @@ class FOPredictJobGenerator(JobGenerator):
 
     Args:
         root_dir (Path): Root directory to save checkpoints, stats and images.
-        data_source (PredictData): Whether to predict on validation set. If false use test set.
+        data_source (InferenceData): Whether to predict on validation set. If false use test set.
     """
 
     def __init__(
         self,
-        data_source: PredictData,
+        data_source: InferenceData,
         seed: int,
         accelerator: str,
         root_dir: Path,
@@ -1452,7 +1481,7 @@ class FOPredictJobGenerator(JobGenerator):
 
             # pick the dataloader based on predict data
             dataloader = datamodule.test_dataloader()
-            if self.data_source == PredictData.VAL:
+            if self.data_source == InferenceData.VAL:
                 dataloader = datamodule.val_dataloader()
 
             # pass root_dir to engine so all models in ensemble have the same root dir

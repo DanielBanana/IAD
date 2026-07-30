@@ -23,6 +23,9 @@ from torchvision.transforms.v2 import Compose, Resize, Transform
 from lightning import LightningModule, Trainer
 from torchvision.tv_tensors import Mask
 
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
+
+
 
 
 # ANOMALIB
@@ -36,7 +39,7 @@ from anomalib.visualization.image.item_visualizer import (
 from anomalib.data import ImageBatch, ImageItem
 from anomalib.pre_processing.utils.transform import get_exportable_transform
 from anomalib.utils.path import generate_output_filename
-from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
+from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, PredictData as InferenceData
 from anomalib.pipelines.tiled_ensemble.components.thresholding import ThresholdingJob
 from anomalib.pipelines.tiled_ensemble.components.utils.ensemble_tiling import EnsembleTiler
 from anomalib.pipelines.tiled_ensemble.components.utils.helper_functions import get_ensemble_tiler, get_threshold_values
@@ -45,6 +48,8 @@ from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
 from anomalib.models.components import AnomalibModule
 from anomalib.utils.normalization.min_max import normalize
+
+f
 
 
 # OWN CODE
@@ -457,6 +462,7 @@ class AOIMetricsCalculationJob(Job):
         prev_stage_result: Tuple[List[ImageBatch],Any] | List[ImageBatch],
         root_dir: Path,
         evaluator: nn.Module,
+        saveName: str = "metric_results.csv"
     ) -> None:
         super().__init__()
         self.accelerator = accelerator
@@ -468,6 +474,8 @@ class AOIMetricsCalculationJob(Job):
             self.rest = None
         self.root_dir = root_dir
         self.evaluator = evaluator
+        self.saveName = saveName
+
 
     def run(self, task_id: int | None = None) -> Tuple[List[ImageBatch],Dict[str,Any]]:
         """Run a job that calculates image and pixel level metrics.
@@ -498,7 +506,7 @@ class AOIMetricsCalculationJob(Job):
             print(f"{name}: {value:.4f}")
 
         # save path used in `save` method
-        metrics_dict["save_path"] = self.root_dir / "metric_results.csv"
+        metrics_dict["save_path"] = self.root_dir / self.saveName
 
         return self.predictions, metrics_dict
 
@@ -527,10 +535,14 @@ class AOIMetricsCalculationJob(Job):
         metrics_df.to_csv(results_path, index=False)
 
 class AOIMetricsCalculationJobGenerator(JobGenerator):
-    """Generate MetricsCalculationJob.
+    """
+    Generates the Job to Calculate the metrics to determine the quality of the anomaly detection model
+    + thresholds
 
-    Args:
-        root_dir (Path): Root directory to save checkpoints, stats and images.
+    Parameters
+    ----------
+    JobGenerator : class
+        Original JobGenerator class we inherit from
     """
 
     def __init__(
@@ -538,12 +550,31 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         accelerator: str,
         root_dir: Path,
         modelConfig: ModelConfig,
-        tile_size: Tuple[int,int]
+        tile_size: Tuple[int,int],
+        saveName: str = "metric_results.csv"
     ) -> None:
+        """
+        Generates the Job to Calculate the metrics to determine the quality of the anomaly detection model
+        + thresholds
+
+        Parameters
+        ----------
+        accelerator : str
+            On what kind of hardware to run the job
+        root_dir : Path
+            In which directory the results are saved
+        modelConfig : ModelConfig
+            Configuration dataclass object the describes the anomaly detection model 
+        tile_size : Tuple[int,int]
+            Size of the tile we split the images into
+        saveName : str (optional)
+            Name of the file that contains the result metrics like AUROC or F1 score. Default is `"metric_results.csv"`
+        """
         self.accelerator = accelerator
         self.root_dir = root_dir
         self.modelConfig = modelConfig
         self.tile_size = tile_size
+        self.saveName = saveName
 
     @property
     def job_class(self) -> type:
@@ -574,6 +605,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
                 prev_stage_result=prev_stage_result,
                 root_dir=self.root_dir,
                 evaluator=model.evaluator,
+                saveName=self.saveName
             )
         else:
             msg = "Model passed to tiled ensemble has no evaluator module which is required to calculate metrics."
@@ -685,7 +717,7 @@ class AOIVisualizationJob(Job):
 
     name = "VisualizeOnDisk"
 
-    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, datasetName:str, category:str, visualisationArgs:dict[str,Any], predMaskImage:bool=False) -> None:
+    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], root_dir: Path, datasetName:str, category:str,  visualisationArgs:dict[str,Any], predMaskImage:bool=False) -> None:
         super().__init__()
         # self.predictions = prev_stage_result
         if isinstance(prev_stage_result, Tuple):
@@ -738,29 +770,6 @@ class AOIVisualizationJob(Job):
         del task_id  # not needed here
 
         logger.info("Starting visualization.")
-        # logger.debug(f"{self.name}: image: {self.predictions[0].image[0]}")
-        # logger.debug(f"{self.name}: anomaly_map: {self.predictions[0].anomaly_map[0]}")
-        # logger.debug(f"{self.name}: pred_Mask: {self.predictions[0].pred_mask[0]}")
-        # logger.debug(f"{self.name}: gt_mask: {self.predictions[0].gt_mask[0]}")
-
-
-        # for batch in tqdm(self.predictions, desc="51 Visualisation"):
-        #     for data in batch:
-        #         path = data.image_path
-        #         sample:fo.Sample = self.FO_Dataset[path]
-        #         conf = data.pred_score.item()
-        #         anomaly = "anomaly" if data.pred_label.item() else "normal"
-
-        #         sample[f"pred_anomaly_score_{self.modelName}"] = conf
-        #         sample[f"pred_anomaly_{self.modelName}"] = fo.Classification(label=anomaly)
-        #         heatmap = data.anomaly_map.to("cpu")
-        #         sample[f"pred_anomaly_map_{self.modelName}"] = fo.Heatmap(map=heatmap.data.numpy().squeeze()*255, range=[0,255])
-        #         try:
-        #             mask = data.pred_mask.to("cpu")
-        #             sample[f"pred_defect_mask_{self.modelName}"] = fo.Segmentation(mask=mask.data.numpy().squeeze().astype(np.uint8)*255)
-        #         except:
-        #             logger.error("Segmentation prediction mask not available.")
-        #         sample.save()
 
         for batch in tqdm(self.predictions, desc="Visualisation"):
             for data in batch:
@@ -873,7 +882,7 @@ class AOIFiftyOneVisJob(Job):
 
     name = "51Visualize"
 
-    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, datamodule: FODataModule, modelName:str) -> None:
+    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, datamodule: FODataModule, modelName:str, split:InferenceData) -> None:
         super().__init__()
         if isinstance(prev_stage_result, Tuple):
             self.predictions = prev_stage_result[0]
@@ -887,6 +896,7 @@ class AOIFiftyOneVisJob(Job):
         self.modelName = modelName
         self.datasetName = datamodule.name
         self.category:str = datamodule.category # dataArgs["init_args"].get("category",FO_Dataset.first().category.label)
+        self.split = split
         logger.debug(f"{self.name}: Dataset name: {self.datasetName}")
         logger.debug(f"{self.name}: Selected Category: {self.category}")
         logger.debug(f"{self.name}: Model name: {self.modelName}")
@@ -920,11 +930,33 @@ class AOIFiftyOneVisJob(Job):
                     sample[f"pred_defect_mask_{self.modelName}"] = fo.Segmentation(mask=mask.data.numpy().squeeze().astype(np.uint8)*255)
                 except:
                     logger.error("Segmentation prediction mask not available.")
-                if isinstance(sample.tags, list):
-                    if "predicted" not in sample.tags:
-                        sample.tags.append("predicted")
+
+                enum_values = {getattr(member, "value", member) for member in InferenceData}
+
+                if hasattr(sample, 'tags'):
+                    if isinstance(sample.tags, list):
+                        split_value = self.split.value
+                        new_tags: list[str] = []
+                        split_replaced = False
+                    
+                        for tag in sample.tags: # TODO ignore
+                            if isinstance(tag, str) and tag in enum_values:
+                                if not split_replaced:
+                                    new_tags.append(split_value)
+                                    split_replaced = True
+                            else:
+                                new_tags.append(tag)
+
+                        if not split_replaced:
+                            new_tags.append(split_value)
+                        if "predicted" not in new_tags:
+                            new_tags.append("predicted")
+
+                        sample.tags = new_tags
+                    else:
+                        sample.tags = ["predicted", self.split.value]
                 else:
-                    sample.tags = ["predicted"]
+                    sample.tags = ["predicted", self.split.value]
                 sample.save()
         # self.FO_Dataset.tag_samples("predicted")
         # self.FO_Dataset.tags.append("predicted")
@@ -956,10 +988,11 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         root_dir (Path): Root directory where images will be saved (root/images).
     """
 
-    def __init__(self, FO_Dataset:fo.Dataset, datamodule:FODataModule, modelName:str) -> None:
+    def __init__(self, FO_Dataset:fo.Dataset, datamodule:FODataModule, modelName:str, split:InferenceData) -> None:
         self.datamodule = datamodule
         self.FO_Dataset = FO_Dataset
         self.modelName = modelName
+        self.split = split
 
     @property
     def job_class(self) -> type:
@@ -983,7 +1016,7 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         del args  # args not used here
 
         if prev_stage_result is not None:
-            yield AOIFiftyOneVisJob(prev_stage_result, self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelName)
+            yield AOIFiftyOneVisJob(prev_stage_result, self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelName, split=self.split)
         else:
             msg = "Visualization job requires tile level predictions from previous step."
             raise ValueError(msg)

@@ -31,7 +31,7 @@ from lightning.pytorch import Callback
 
 # OWN FILES
 from setup import create_model
-from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, PredTiledEnsemble
+from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, InferenceTiledEnsemble
 from tiling.tilingCheckpoints import checkTiledCheckpointsExist
 from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles
 from run_paths import resolve_checkpoint_paths, resolve_wandb_manifest_dir, resolve_output_dir
@@ -747,10 +747,10 @@ class AnomalyDetectionManager:
 
         assert datasetSession.AL_PredictDataset is not None
 
-        inferencerPipeline = PredTiledEnsemble(root_dir=self.outputDir,
+        inferencerPipeline = InferenceTiledEnsemble(root_dir=self.outputDir,
                                           trainingDir=trainingDir,
                                           ckptDir=ckptDir,
-                                          predictDataset=datasetSession.AL_PredictDataset,
+                                          inferenceDataset=datasetSession.AL_PredictDataset,
                                           dataset=datasetSession.FO_Dataset,
                                           datamodule=datamodule,
                                           dataModuleConfig=dataModuleConfig,
