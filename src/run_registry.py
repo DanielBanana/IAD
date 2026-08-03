@@ -593,7 +593,7 @@ def reproduce_run(runDir: Path) -> Dict[str, Any]:
     """
     # Local imports: keep this module importable without the full config stack
     # loaded, for callers that only want path/listing utilities.
-    from userConfigs import ModelConfig, TrainerConfig, DataModuleConfig, TilingPipelineConfig
+    from AnomalyDetection.src.setup import ModelConfig, TrainerConfig, DataModuleConfig, TilingPipelineConfig
 
     manifestPath = runDir / "manifest.yaml"
     if not manifestPath.exists():
