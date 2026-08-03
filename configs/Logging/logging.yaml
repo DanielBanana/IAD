@@ -24,6 +24,7 @@ handlers:
     filename: info.log
     maxBytes: 10000000
     backupCount: 3
+    encoding: utf-8
   debugFile:
     class: logging.handlers.RotatingFileHandler
     level: DEBUG
@@ -31,6 +32,7 @@ handlers:
     filename: debug.log
     maxBytes: 10000000
     backupCount: 3
+    encoding: utf-8
 loggers:
   root:
     level: DEBUG

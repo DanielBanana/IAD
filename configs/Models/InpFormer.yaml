@@ -5,7 +5,7 @@ model:
   name: "InpFormer"
   class_path: "InpFormer"
   init_args:
-    encoder_name: "dinov2reg_vit_base_14" #"vit_base_patch14_reg4_dinov2" # Name of the pre-trained Vision Transformer backbone to use as the encoder (e.g., a DINOv2 variant): 
+    encoder_name: "vit_base_patch14_reg4_dinov2" # "dinov2reg_vit_base_14" #"vit_base_patch14_reg4_dinov2" # Name of the pre-trained Vision Transformer backbone to use as the encoder (e.g., a DINOv2 variant): 
         # backbones: dinov2, dinov2reg; enc"small", "base", "large"
     target_layers: [2, 3, 4, 5, 6, 7, 8, 9]
     fuse_layer_encoder: [[0, 1, 2, 3], [4, 5, 6, 7]]

@@ -561,15 +561,15 @@ def resolve_run_dir(
     if selection == "latest":
         runs = list_runs(baseOutputDir, productName=category, modelName=modelName, onlyComplete=True)
         if not runs:
-            print(f"There has no previous last run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
-            logger.info(f"There has no previous last run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
+            print(f"There has been found no previous latest run for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
+            logger.info(f"There has been found no previous latest run been found for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
             return None
         return runs[0].runDir
     elif selection == "best":
         run = best_run(baseOutputDir, productName=category, metric=metric, mode="max", modelName=modelName)
         if run is None:
-            print(f"There has no previous best run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
-            logger.info(f"There has no previous best run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
+            print(f"There has been found no previous best run for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
+            logger.info(f"There has been found no previous best run been found for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
             return None
         return run.runDir
     else:
