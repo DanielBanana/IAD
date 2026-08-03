@@ -492,6 +492,8 @@ class EvalTiledEnsemble(Pipeline):
                 logger.info("Testing to determine quality on unseen data")
                 modes.append(InferenceData.TEST)
 
+        statsDir = self.ckptPath.parent if self.ckptPath is not None and self.rootDir is None else self.rootDir
+
         for mode in modes:
 
             inferenceJobGenerator = InferenceJobGenerator(
@@ -534,15 +536,19 @@ class EvalTiledEnsemble(Pipeline):
                     ),
                 )
 
+            if mode == InferenceData.VAL:
+                # 5. calculate statistics used for inference
+                runners.append(SerialRunner(AOIStatisticsJobGenerator(statsDir)))
+
             # 4. (optional) normalize
             if normalization_stage == NormalizationStage.IMAGE:
-                logger.info(f"Taking stats for Nomalization from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
-                runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent)))
+                logger.info(f"Taking stats for Nomalization from: {statsDir}")
+                runners.append(SerialRunner(AOINormalizationJobGenerator(statsDir)))
 
             # 5. (optional) threshold to get labels from scores
             if thresholding_stage == ThresholdingStage.IMAGE:
-                logger.info(f"Taking stats for Thresholding from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
-                runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent, normalization_stage)))
+                logger.info(f"Taking stats for Thresholding from: {statsDir}")
+                runners.append(SerialRunner(AOIThresholdingJobGenerator(statsDir, normalization_stage)))
 
             # 6. calculate accuracy metrics
             runners.append(
