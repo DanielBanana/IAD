@@ -129,6 +129,79 @@ class ManagerState(IntFlag):
 # Create the general logger
 logger = logging.getLogger(__name__)
 
+# dictConfig() replaces the root logger's handlers wholesale, so calling it
+# more than once per process would silently drop file logging for anything
+# that happened before the *last* call. AnomalyDetectionManager instances are
+# created repeatedly within a single console session (every load_product /
+# train_product / inference), so configuration must happen at most once.
+_logging_configured = False
+
+
+def _default_logging_config() -> None:
+    """Fallback root logging config used when no logging.yaml is found."""
+    logging_config: Dict[str, Any] = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "simple": {"format": "%(levelname)s: %(message)s"},
+            "detailed": {
+                "format": "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s",
+                "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+            },
+        },
+        "handlers": {
+            "stdout": {"class": "logging.StreamHandler", "level": "INFO", "formatter": "simple", "stream": sys.stdout},
+            "stderr": {"class": "logging.StreamHandler", "level": "WARNING", "formatter": "simple", "stream": sys.stderr},
+            "infoFile": {
+                "class": "logging.handlers.RotatingFileHandler", "level": "INFO", "formatter": "detailed",
+                "filename": "info.log", "maxBytes": 10000000, "backupCount": 3, "encoding": "utf-8",
+            },
+            "debugFile": {
+                "class": "logging.handlers.RotatingFileHandler", "level": "DEBUG", "formatter": "detailed",
+                "filename": "debug.log", "maxBytes": 10000000, "backupCount": 3, "encoding": "utf-8",
+            },
+        },
+        "root": {"level": "DEBUG", "handlers": ["stderr", "stdout", "debugFile", "infoFile"]},
+    }
+    logging.config.dictConfig(logging_config)
+
+
+def configure_logging(logDir: Path, configDir: Path, logConfigFile: Optional[Path] = None) -> None:
+    """
+    Attach the project's file/console log handlers to the root logger.
+
+    Call this once, as early as possible in the process (before any hardware
+    or worker threads start logging) -- e.g. from main.py, not lazily from the
+    first AnomalyDetectionManager construction, otherwise everything logged
+    before that first construction never reaches the log files. Safe to call
+    repeatedly; only the first call actually touches the root logger.
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+    _logging_configured = True
+
+    if not os.path.exists(logDir):
+        os.makedirs(logDir)
+
+    if logConfigFile is None:
+        logConfigFile = configDir / "Logging" / "logging.yaml"
+
+    if not Path.exists(logConfigFile):
+        _default_logging_config()
+        return
+
+    with open(logConfigFile) as file:
+        config: Dict[str, Any] = yaml.safe_load(file)
+    handlers: Dict[str, Dict[str, Any]] | None = config.get("handlers", None)
+    if handlers is not None:
+        for handlerName in handlers.keys():
+            filename = handlers[handlerName].get("filename", None)
+            if filename is not None:
+                config["handlers"][handlerName]["filename"] = logDir / filename
+    dictConfig(config=config)
+
+
 class AnomalyDetectionManager:
 
     # Each action declares what state it needs. Single source of truth —
@@ -197,8 +270,9 @@ class AnomalyDetectionManager:
         self.isTilingSetup = False
 
         self.datasetSession: Optional[DatasetSession] = None
-  
-        self.setupLogging()
+
+        self.logDir: Path = self.outputDir / "logs"
+        configure_logging(self.logDir, self.configDir)
 
     def __repr__(self):
         return "\n".join(f"{key}={value}" for key, value in self.__dict__.items())
@@ -243,108 +317,6 @@ class AnomalyDetectionManager:
         """
         dateAndTime: str = datetime.now().strftime("%Y%m%d-%H%M")
         return dateAndTime
-
-    def setupLogging(self, logDir: Optional[Path] = None, logConfigFile: Optional[Path] = None):
-        """
-        Prepare the logging for the current Manager session by creating a log directory, removing old logs and loading the logging
-        config from a given file
-
-        Parameters
-        ----------
-        logDir : Optional[Path] (optional)
-            _description_. Default is `None`
-        logConfigFile : Optional[Path] (optional)
-            _description_. Default is `None`
-        """
-
-
-        if logDir is None:
-            self.logDir = self.outputDir / "logs"
-        else:
-            self.logDir = logDir
-
-        if not os.path.exists(self.logDir):
-            os.makedirs(self.logDir)
-        # else:
-        #     shutil.rmtree(self.logDir) # TODO Make this safer
-        #     os.makedirs(self.logDir)
-
-        if logConfigFile is None:
-            logConfigFile = self.configDir / "Logging" / "logging.yaml"
-        
-        exists = Path.exists(logConfigFile)
-        if not exists:
-            self._setupDefaultLogger()
-        else:
-            with open(logConfigFile) as file:
-                config:Dict[str,Any] = yaml.safe_load(file)
-            handlers:Dict[str, Dict[str,Any]]|None = config.get("handlers", None)
-            if handlers is not None:
-                for handlerName in handlers.keys():
-                    filename = handlers[handlerName].get("filename", None)
-                    if filename is not None:
-                        config["handlers"][handlerName]["filename"] = self.logDir / filename
-            dictConfig(config=config)
-
-    def _setupDefaultLogger(self):
-        """
-        If the given logging file does not exist for whatever reaseon we create this default logger.
-
-        Returns
-        -------
-        logger : logger.Logger
-            The default logger
-        """
-        logging_config:Dict[str,Any] = {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "formatters": {
-                "simple": {
-                    "format": "%(levelname)s: %(message)s"
-                },
-                "detailed": {
-                    "format": "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s",
-                    "datefmt": "%Y-%m-%dT%H:%M:%S%z"
-                }
-            },
-            "handlers": {
-                "stdout": {
-                    "class": "logging.StreamHandler",
-                    "level": "INFO",
-                    "formatter": "simple",
-                    "stream": sys.stdout
-                },
-                "stderr": {
-                    "class": "logging.StreamHandler",
-                    "level": "WARNING",
-                    "formatter": "simple",
-                    "stream": sys.stderr
-                },
-                "infoFile": {
-                    "class": "logging.handlers.RotatingFileHandler",
-                    "level": "INFO",
-                    "formatter": "detailed",
-                    "filename": "info.log",
-                    "maxBytes": 10000000,
-                    "backupCount": 3
-                },
-                "debugFile": {
-                    "class": "logging.handlers.RotatingFileHandler",
-                    "level": "DEBUG",
-                    "formatter": "detailed",
-                    "filename": "debug.log",
-                    "maxBytes": 10000000,
-                    "backupCount": 3
-                }
-            },
-            "root": {
-                "level": "DEBUG",
-                "handlers": ["stderr", "stdout", "debugFile", "infoFile"]
-            }
-        }
-        logging.config.dictConfig(logging_config)
-        logger = logging.getLogger()
-        return logger
 
     def _apply_visualizer_output_dir(self, outputDir: Path) -> None:
         """
@@ -454,7 +426,7 @@ class AnomalyDetectionManager:
         error_cls = self._STATE_ERROR_CLASSES[first_missing_flag]
 
         raise error_cls(
-            f"Cannot run '{action}': missing {', '.join(missing_descriptions)}",
+            f"Cannot run '{action}': missing: {', '.join(missing_descriptions)}",
             missing=missing_descriptions,
         )
     
@@ -853,9 +825,11 @@ class AnomalyDetectionManager:
         complete, missing = checkTiledCheckpointsExist(self.ckptDir, tilingPipelineConfig)
         if not complete:
             raise CheckpointNotFoundError(
-                f"Incomplete checkpoint set in {self.ckptDir}: missing {[p.name for p in missing]}",
+                f"Incomplete checkpoint set in {self.ckptDir}: missing: {[p.name for p in missing]}; ",
                 missing=[f"Checkpoint file {p.name}" for p in missing],
             )
+        else:
+            self.state |= ManagerState.CHECKPOINT_AVAILABLE
         self._require("eval")
         self._prepareRun(evalConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
         self._evalTiledModel(
