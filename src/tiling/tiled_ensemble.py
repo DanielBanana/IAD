@@ -334,71 +334,72 @@ class TrainTiledEnsemble(Pipeline):
             logger.warning("No validation set provided, skipping statistics calculation.")
             return runners
 
-        mode = InferenceData.VAL
+        # mode = InferenceData.VAL
 
-        # 2. predict using validation data
-        predict_job_generator = InferenceJobGenerator(
-            data_source=mode,
-            seed=seed,
-            accelerator=self.trainerConfig.accelerator,
-            root_dir=self.rootDir,
-            tilingPipelineConfig=self.tilingPipelineConfig,
-            dataModuleConfig=self.dataModuleConfig,
-            datamodule=self.datamodule,
-            modelConfig=self.modelConfig,
-            normalization_stage=self.tilingPipelineConfig.normalization_stage,
-            inferenceDataset=None
-        )
+        # # 2. predict using validation data
+        # predict_job_generator = InferenceJobGenerator(
+        #     data_source=mode,
+        #     seed=seed,
+        #     accelerator=self.trainerConfig.accelerator,
+        #     root_dir=self.rootDir,
+        #     tilingPipelineConfig=self.tilingPipelineConfig,
+        #     dataModuleConfig=self.dataModuleConfig,
+        #     datamodule=self.datamodule,
+        #     modelConfig=self.modelConfig,
+        #     normalization_stage=self.tilingPipelineConfig.normalization_stage,
+        #     inferenceDataset=None
+        # )
 
-        if self.trainerConfig.accelerator == "cuda" and n_parallel > 1:
-            runners.append(
-                ParallelRunner(predict_job_generator, n_jobs=n_parallel),
-            )
-        else:
-            runners.append(
-                SerialRunner(predict_job_generator),
-            )
+        # if self.trainerConfig.accelerator == "cuda" and n_parallel > 1:
+        #     runners.append(
+        #         ParallelRunner(predict_job_generator, n_jobs=n_parallel),
+        #     )
+        # else:
+        #     runners.append(
+        #         SerialRunner(predict_job_generator),
+        #     )
 
-        # 3. merge predictions
-        runners.append(SerialRunner(AOIMergeJobGenerator(tilingPipelineConfig=self.tilingPipelineConfig)))
+        # # 3. merge predictions
+        # runners.append(SerialRunner(AOIMergeJobGenerator(tilingPipelineConfig=self.tilingPipelineConfig)))
 
-        # 4. (optional) smooth seams
-        if self.tilingPipelineConfig.seam_smoothing.apply:
-            runners.append(
-                SerialRunner(
-                    AOISmoothingJobGenerator(accelerator="cpu", tilingPipelineConfig=self.tilingPipelineConfig),
-                ),
-            )
+        # # 4. (optional) smooth seams
+        # if self.tilingPipelineConfig.seam_smoothing.apply:
+        #     runners.append(
+        #         SerialRunner(
+        #             AOISmoothingJobGenerator(accelerator="cpu", tilingPipelineConfig=self.tilingPipelineConfig),
+        #         ),
+        #     )
 
-        # 5. calculate statistics used for inference
-        runners.append(SerialRunner(AOIStatisticsJobGenerator(self.rootDir)))
+        # # 5. calculate statistics used for inference
+        # runners.append(SerialRunner(AOIStatisticsJobGenerator(self.rootDir)))
 
-        # 6. (optional) normalize
-        if self.tilingPipelineConfig.normalization_stage == NormalizationStage.IMAGE:
-            runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir)))
+        # # 6. (optional) normalize
+        # if self.tilingPipelineConfig.normalization_stage == NormalizationStage.IMAGE:
+        #     runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir)))
             
-        # 7. (optional) threshold to get labels from scores
-        if self.tilingPipelineConfig.thresholding_stage == ThresholdingStage.IMAGE:
-            runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir, self.tilingPipelineConfig.normalization_stage)))
+        # # 7. (optional) threshold to get labels from scores
+        # if self.tilingPipelineConfig.thresholding_stage == ThresholdingStage.IMAGE:
+        #     runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir, self.tilingPipelineConfig.normalization_stage)))
         
-        # 8. calculate accuracy metrics
-        runners.append(
-            SerialRunner(
-                AOIMetricsCalculationJobGenerator(
-                    accelerator=self.trainerConfig.accelerator,
-                    root_dir=self.rootDir,
-                    modelConfig=self.modelConfig,
-                    tile_size=self.tilingPipelineConfig.tile_size
-                ),
-            ),
-        )
+        # # 8. calculate accuracy metrics
+        # runners.append(
+        #     SerialRunner(
+        #         AOIMetricsCalculationJobGenerator(
+        #             accelerator=self.trainerConfig.accelerator,
+        #             root_dir=self.rootDir,
+        #             modelConfig=self.modelConfig,
+        #             tile_size=self.tilingPipelineConfig.tile_size,
+        #             split=mode
+        #         ),
+        #     ),
+        # )
 
-        # 9. Visualise on disk
-        runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir/mode.value, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=self.visualisationArgs, predMaskImage=True)))
+        # # 9. Visualise on disk
+        # runners.append(SerialRunner(AOIVisualizationJobGenerator(root_dir=self.rootDir/mode.value, datasetName=self.datamodule.name, category=self.datamodule.category, visualisationArgs=self.visualisationArgs, predMaskImage=True)))
 
-        # 9 (optional) Associate the results back with the fiftyone dataset where they come from so they can be visualised
-        if self.FO_Dataset is not None:
-            runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name, split=mode)))
+        # # 9 (optional) Associate the results back with the fiftyone dataset where they come from so they can be visualised
+        # if self.FO_Dataset is not None:
+        #     runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.FO_Dataset, datamodule=self.datamodule, modelName=self.modelConfig.name, split=mode)))
 
         return runners
 
@@ -538,11 +539,10 @@ class EvalTiledEnsemble(Pipeline):
                 logger.info(f"Taking stats for Nomalization from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
                 runners.append(SerialRunner(AOINormalizationJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent)))
 
-            if mode is InferenceData.VAL:
-                # 5. (optional) threshold to get labels from scores
-                if thresholding_stage == ThresholdingStage.IMAGE:
-                    logger.info(f"Taking stats for Thresholding from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
-                    runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent, normalization_stage)))
+            # 5. (optional) threshold to get labels from scores
+            if thresholding_stage == ThresholdingStage.IMAGE:
+                logger.info(f"Taking stats for Thresholding from: {self.rootDir if self.ckptPath is None else self.ckptPath.parent}")
+                runners.append(SerialRunner(AOIThresholdingJobGenerator(self.rootDir if self.ckptPath is None else self.ckptPath.parent, normalization_stage)))
 
             # 6. calculate accuracy metrics
             runners.append(
@@ -552,7 +552,8 @@ class EvalTiledEnsemble(Pipeline):
                         root_dir=self.rootDir,
                         modelConfig=self.modelConfig,
                         tile_size=self.tilingPipelineConfig.tile_size,
-                        saveName=f"metric_results_{mode.value}.csv"
+                        saveName=f"metric_results_{mode.value}.csv",
+                        split=mode
                     ),
                 ),
             )

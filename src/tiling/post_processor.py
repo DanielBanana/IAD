@@ -117,6 +117,7 @@ class AOIPostProcessor(PostProcessor):
             *args: Variable length argument list.
             **kwargs: Arbitrary keyword arguments.
         """
+        print(f"AOIPostProcessor on_validation_batch_end")
         del trainer, pl_module, args, kwargs  # Unused arguments.
         if self.enable_thresholding:
             # update threshold metrics
@@ -135,6 +136,7 @@ class AOIPostProcessor(PostProcessor):
             trainer (Trainer): PyTorch Lightning trainer instance.
             pl_module (LightningModule): PyTorch Lightning module instance.
         """
+        print(f"AOIPostProcessor on_validation_epoch_end")
         del trainer, pl_module
         if self.enable_thresholding:
             # compute threshold values
@@ -175,6 +177,7 @@ class AOIPostProcessor(PostProcessor):
             *args: Variable length argument list.
             **kwargs: Arbitrary keyword arguments.
         """
+        print(f"AOIPostProcessor on_test_batch_end")
         del trainer, pl_module, args, kwargs
         self.post_process_batch(outputs)
 
@@ -195,6 +198,7 @@ class AOIPostProcessor(PostProcessor):
             *args: Variable length argument list.
             **kwargs: Arbitrary keyword arguments.
         """
+        print(f"AOIPostProcessor on_predict_batch_end")
         del trainer, pl_module, args, kwargs
         self.post_process_batch(outputs)
 
@@ -252,6 +256,7 @@ class AOIPostProcessor(PostProcessor):
         Args:
             batch (Batch): Batch containing model predictions.
         """
+        print(f"AOIPostProcessor post_process_batch")
         # apply normalization
         if self.enable_normalization:
             self.normalize_batch(batch)
@@ -265,6 +270,7 @@ class AOIPostProcessor(PostProcessor):
         Args:
             batch (Batch): Batch containing model predictions.
         """
+        print(f"AOIPostProcessor threshold_batch")
         batch.pred_label = (
             batch.pred_label
             if batch.pred_label is not None
@@ -283,6 +289,7 @@ class AOIPostProcessor(PostProcessor):
         Args:
             batch (Batch): Batch containing model predictions.
         """
+        print(f"AOIPostProcessor normalize_batch")
         # normalize pixel-level predictions
         batch.anomaly_map = self._normalize(batch.anomaly_map, self.pixel_min, self.pixel_max, self.pixel_threshold)
         # normalize image-level predictions

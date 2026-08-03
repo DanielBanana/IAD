@@ -14,7 +14,7 @@ import torch
 
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from tqdm import tqdm
 from typing import Any, Tuple, Dict, List
 from torch import Tensor, nn
@@ -24,6 +24,7 @@ from lightning import LightningModule, Trainer
 from torchvision.tv_tensors import Mask
 
 from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage
+from anomalib.metrics.evaluator import Evaluator
 
 
 
@@ -48,9 +49,6 @@ from anomalib.pipelines.components import Job, JobGenerator
 from anomalib.pipelines.types import GATHERED_RESULTS, RUN_RESULTS, PREV_STAGE_RESULT
 from anomalib.models.components import AnomalibModule
 from anomalib.utils.normalization.min_max import normalize
-
-f
-
 
 # OWN CODE
 from data.anomaly_datasets import FODataModule
@@ -461,7 +459,8 @@ class AOIMetricsCalculationJob(Job):
         accelerator: str,
         prev_stage_result: Tuple[List[ImageBatch],Any] | List[ImageBatch],
         root_dir: Path,
-        evaluator: nn.Module,
+        evaluator: Evaluator,
+        split: InferenceData,
         saveName: str = "metric_results.csv"
     ) -> None:
         super().__init__()
@@ -475,6 +474,7 @@ class AOIMetricsCalculationJob(Job):
         self.root_dir = root_dir
         self.evaluator = evaluator
         self.saveName = saveName
+        self.split = split
 
 
     def run(self, task_id: int | None = None) -> Tuple[List[ImageBatch],Dict[str,Any]]:
@@ -492,15 +492,29 @@ class AOIMetricsCalculationJob(Job):
         logger.debug(f"{self.name}: Sample: {self.predictions[0].image}")
         logger.debug(f"{self.name}: Sample: {self.predictions[0].anomaly_map}")
 
-        for batch in tqdm(self.predictions, desc="Calculating metrics"):
-            self.evaluator.on_test_batch_end(None, None, None, batch=batch, batch_idx=0)
 
-        # compute all metrics on specified accelerator
-        metrics_dict:Dict[str,Any] = {}
-        for metric in self.evaluator.test_metrics:
-            metric.to(self.accelerator)
-            metrics_dict[metric.name] = metric.compute().item()
-            metric.cpu()
+        if self.split == InferenceData.TEST:
+            for batch in tqdm(self.predictions, desc="Calculating metrics"):
+                self.evaluator.on_test_batch_end(None, None, None, batch=batch, batch_idx=0)
+
+                # compute all metrics on specified accelerator
+                metrics_dict:Dict[str,Any] = {}
+                for metric in self.evaluator.test_metrics:
+                    metric.to(self.accelerator)
+                    metrics_dict[metric.name] = metric.compute().item()
+                    metric.cpu()
+
+        else:
+            # split has to be InferenceData.VAL
+            for batch in tqdm(self.predictions, desc="Calculating metrics"):
+                self.evaluator.on_validation_batch_end(None, None, None, batch=batch, batch_idx=0)
+
+            # compute all metrics on specified accelerator
+            metrics_dict:Dict[str,Any] = {}
+            for metric in self.evaluator.val_metrics:
+                metric.to(self.accelerator)
+                metrics_dict[metric.name] = metric.compute().item()
+                metric.cpu()
 
         for name, value in metrics_dict.items():
             print(f"{name}: {value:.4f}")
@@ -551,6 +565,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         root_dir: Path,
         modelConfig: ModelConfig,
         tile_size: Tuple[int,int],
+        split:InferenceData,
         saveName: str = "metric_results.csv"
     ) -> None:
         """
@@ -575,6 +590,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         self.modelConfig = modelConfig
         self.tile_size = tile_size
         self.saveName = saveName
+        self.split = split
 
     @property
     def job_class(self) -> type:
@@ -604,8 +620,9 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
                 accelerator=self.accelerator,
                 prev_stage_result=prev_stage_result,
                 root_dir=self.root_dir,
-                evaluator=model.evaluator,
-                saveName=self.saveName
+                evaluator=cast(Evaluator,model.evaluator),
+                saveName=self.saveName,
+                split=self.split
             )
         else:
             msg = "Model passed to tiled ensemble has no evaluator module which is required to calculate metrics."

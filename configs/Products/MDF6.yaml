@@ -21,7 +21,7 @@ trainer:
   config: "Training_padim.yaml"
 
 inferencer:
-  config: "Prediction.yaml"
+  config: "Inference.yaml"
 
 dataset:
   name: "Irlbacher2023"

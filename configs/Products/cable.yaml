@@ -23,7 +23,7 @@ trainer:
   config: "Training_InpFormer.yaml"
 
 inferencer:
-  config: "Prediction.yaml"
+  config: "Inference.yaml"
 
 dataset:
   name: "MVTecADShort"
