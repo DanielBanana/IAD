@@ -24,7 +24,7 @@ from torchvision.transforms.v2 import Transform
 from contextlib import contextmanager
 
 # ANOMALIB
-from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold
+from anomalib.metrics import F1Score, AUPR, AUROC, F1AdaptiveThreshold, AUPIMO, AUPRO, PGn, PBn, ManualThreshold, F1Max
 from anomalib.data import MVTecAD, BTech, Visa, Kolektor, Folder, PredictDataset
 from anomalib.models import Padim, EfficientAd, Dsr, ReverseDistillation, Fastflow, Patchcore, Stfpm, InpFormer, AnomalyVFM, Glass
 from anomalib.models.components import AnomalibModule
@@ -34,7 +34,6 @@ from anomalib.metrics import Evaluator
 from anomalib.pre_processing import PreProcessor
 from anomalib.data.utils.split import ValSplitMode, TestSplitMode
 from anomalib.pipelines.tiled_ensemble.components.utils import NormalizationStage, ThresholdingStage
-from anomalib.metrics import Evaluator
 from anomalib.visualization import ImageVisualizer
 from anomalib.metrics import AUROC, AUPR, F1AdaptiveThreshold, F1Score
 
@@ -362,9 +361,40 @@ def load_metrics_from_yaml(config_path: Path) -> tuple[List[Any], List[Any]]:
     metric_classes: Dict[str, Any] = {
         "AUROC": getattr(__import__("anomalib.metrics", fromlist=["AUROC"]), "AUROC"),
         "AUPR": getattr(__import__("anomalib.metrics", fromlist=["AUPR"]), "AUPR"),
+        "AUPRO": getattr(__import__("anomalib.metrics", fromlist=["AUPRO"]), "AUPRO"),
+        "AUPIMO": getattr(__import__("anomalib.metrics", fromlist=["AUPIMO"]), "AUPIMO"),
         "F1AdaptiveThreshold": getattr(__import__("anomalib.metrics", fromlist=["F1AdaptiveThreshold"]), "F1AdaptiveThreshold"),
+        "ManualThreshold": getattr(__import__("anomalib.metrics", fromlist=["ManualThreshold"]), "ManualThreshold"),
         "F1Score": getattr(__import__("anomalib.metrics", fromlist=["F1Score"]), "F1Score"),
+        "F1Max": getattr(__import__("anomalib.metrics", fromlist=["F1Max"]), "F1Max"),
+        "PBn": getattr(__import__("anomalib.metrics", fromlist=["PBn"]), "PBn"),
+        "PGn": getattr(__import__("anomalib.metrics", fromlist=["PGn"]), "PGn"),
     }
+
+#     - Area Under Curve (AUC) metrics:
+#     - ``AUROC``: Area Under Receiver Operating Characteristic curve
+#     - ``AUPR``: Area Under Precision-Recall curve
+#     - ``AUPRO``: Area Under Per-Region Overlap curve
+#     - ``AUPIMO``: Area Under Per-Image Missed Overlap curve
+
+# - F1-score metrics:
+#     - ``F1Score``: Standard F1 score
+#     - ``F1Max``: Maximum F1 score across thresholds
+
+# - Threshold metrics:
+#     - ``F1AdaptiveThreshold``: Finds optimal threshold by maximizing F1 score
+#     - ``ManualThreshold``: Uses manually specified threshold
+
+# - Other metrics:
+#     - ``AnomalibMetric``: Base class for custom metrics
+#     - ``AnomalyScoreDistribution``: Analyzes score distributions
+#     - ``BinaryPrecisionRecallCurve``: Computes precision-recall curves
+#     - ``Evaluator``: Combines multiple metrics for evaluation
+#     - ``MinMax``: Normalizes scores to [0,1] range
+#     - ``PBn``: Presorted bad with n% good samples misclassified
+#     - ``PGn``: Presorted good with n% bad samples missed
+#     - ``PRO``: Per-Region Overlap score
+#     - ``PIMO``: Per-Image Missed Overlap score
 
     def instantiate_metrics(metrics_config: List[Dict[str, Any]]) -> List[Any]:
         metrics: List[Any] = []
@@ -985,9 +1015,8 @@ class TilingPipelineConfig:
             logger.error("Length can no be determined.")
             raise ValueError(f"Length can no be determined.")
         if isinstance(value, (List, Tuple)):
-            if value.__len__ == 2:
-                return (int(value[0]), int(value[1]))
-        raise ValueError(f"{name} must be a tuple/list of length 2")
+            return (int(value[0]), int(value[1]))
+        raise ValueError(f"{name} must be a tuple/list of length 2. Got {value}")
 
     @classmethod
     def _parse_seam_smoothing(cls, value: Any) -> SeamSmoothingConfig:
@@ -1193,8 +1222,6 @@ class ModelConfig:
             config_dir=config_dir,
             copy_dir=copy_dir,
         )
-
-
 
         # Requires "name" to be present in the YAML's init_args
         # model_name = init_args.get("class_path")

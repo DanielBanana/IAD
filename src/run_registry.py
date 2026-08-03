@@ -421,40 +421,61 @@ def list_runs(
     """
     summaries: List[RunSummary] = []
 
-    for manifestPath in baseOutputDir.glob("**/runs/*/manifest.yaml"):
+    files = baseOutputDir.glob("**/runs/*/manifest.yaml")
+
+    for manifestPath in files:
+        print(f"Checking {manifestPath}")
+        logger.debug(f"Checking {manifestPath}")
         runDir = manifestPath.parent
         try:
             with open(manifestPath) as f:
                 manifest = yaml.safe_load(f)
         except Exception as e:
+            print(f"Skipping unreadable manifest {manifestPath}: {e}")
             logger.warning(f"Skipping unreadable manifest {manifestPath}: {e}")
             continue
 
         cfg = manifest.get("config", {})
         dataset_cfg = cfg.get("dataset", {})
         model_cfg = cfg.get("model", {})
-        category = dataset_cfg.get("category")
+        _category = dataset_cfg.get("category")
+        if isinstance(_category, list):
+            category = _category[0]
+        else:
+            category = _category
         model_name = model_cfg.get("name", "unknown")
 
         if productName is not None and category != productName:
+            print(f"found category ({category}) != wanted product name ({productName}). Skipping")
+            logger.debug(f"found category ({category}) != wanted product name ({productName}). Skipping")
             continue
         if modelName is not None and model_name != modelName:
+            print(f"found model name ({model_name}) != wanted model name ({modelName}). Skipping")
+            logger.debug(f"found model name ({model_name}) != wanted model name ({modelName}). Skipping")
             continue
 
         try:
             tilingCfg = _tiling_config_from_manifest_dict(cfg.get("tiling", {}))
             complete, missing = check_tiled_checkpoints_exist(runDir / "checkpoints", tilingCfg)
+            print("Checkpoints complete!")
+            logger.debug("Checkpoints complete!")
         except Exception as e:
+            print(f"Could not evaluate checkpoint completeness for {runDir}: {e}")
             logger.warning(f"Could not evaluate checkpoint completeness for {runDir}: {e}")
             complete, missing = False, []
 
         try:
             metrics = read_run_metrics(runDir)
+            print(f"Found metrics: {metrics}")
+            logger.debug(f"Found metrics: {metrics}")
         except Exception as e:
+            print(f"Could not read metrics for {runDir}: {e}")
             logger.warning(f"Could not read metrics for {runDir}: {e}")
             metrics = {}
 
         if onlyComplete and not complete:
+            print(f"Wanted only complete tile checkpoints. Some checkpoints are missing ({missing}). Skipping")
+            logger.debug(f"Wanted only complete tile checkpoints. Some checkpoints are missing ({missing}). Skipping")
             continue
 
         summaries.append(RunSummary(
@@ -489,6 +510,7 @@ def best_run(
         if metric in r.metrics
     ]
     if not candidates:
+        logger.debug(f"No candiates for best run determination found.")
         return None
     key = lambda r: r.metrics[metric]
     return max(candidates, key=key) if mode == "max" else min(candidates, key=key)
@@ -535,18 +557,19 @@ def resolve_run_dir(
     _name_ : ValueError
         Selection criterion is neither `latest` nor `best`
     """
+    print(f"Trying to find previous run under {baseOutputDir} for the {modelName} model and the {category} product")
     if selection == "latest":
         runs = list_runs(baseOutputDir, productName=category, modelName=modelName, onlyComplete=True)
         if not runs:
-            print(f"There has no previous run been found for {modelName} / product {category} under {baseOutputDir}. \n If you are training a new model this is assumed to be the case.")
-            logger.info(f"There has no previous run been found for {modelName} / product {category} under {baseOutputDir}. \n If you are training a new model this is assumed to be the case.")
+            print(f"There has no previous last run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
+            logger.info(f"There has no previous last run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
             return None
         return runs[0].runDir
     elif selection == "best":
         run = best_run(baseOutputDir, productName=category, metric=metric, mode="max", modelName=modelName)
         if run is None:
-            print(f"There has no previous run been found for {modelName} / product {category} under {baseOutputDir}. \n If you are training a new model this is assumed to be the case.")
-            logger.info(f"There has no previous run been found for {modelName} / product {category} under {baseOutputDir}. \n If you are training a new model this is assumed to be the case.")
+            print(f"There has no previous best run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
+            logger.info(f"There has no previous best run been found for {baseOutputDir}/DATASETNAME/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
             return None
         return run.runDir
     else:

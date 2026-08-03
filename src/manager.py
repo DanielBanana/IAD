@@ -566,7 +566,7 @@ class AnomalyDetectionManager:
         """
         product = loadProductFromYaml(productConfigPath, config_dir=configDir, baseOutputDir=outputPath)
         manager = cls(outputDir=outputPath, configDir=configDir)
-        import timm
+        # import timm
         # print("TIMM LOADED FROM:", timm.__file__)
         # print("MODEL REGISTERED:", 'vit_base_patch14_reg4_dinov2' in timm.list_models())
         # print("ENCODER_NAME REPR:", repr(product.modelConfig.to_dict().get("encoder_name")))
