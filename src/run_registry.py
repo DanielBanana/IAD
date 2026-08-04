@@ -175,6 +175,35 @@ class RunConfigFiles:
 
 
 # --------------------------------------------------------------------------- #
+# Checkpoint copying (so a run that only *reads* a model still carries its
+# own copy of the exact weights it used)
+# --------------------------------------------------------------------------- #
+
+def copy_checkpoints(srcCkptDir: Path, runDir: Path) -> Path:
+    """Copy every checkpoint file from `srcCkptDir` into `runDir/checkpoints`.
+
+    Used by eval() to pull the checkpoints being evaluated (from the training
+    run they came from) into the evaluation run's own directory, so the run
+    that determined a threshold stays self-contained and inspectable even if
+    the original training run is later deleted or retrained over.
+
+    No-op (destination created but left empty) if `srcCkptDir` doesn't exist.
+    Returns the destination checkpoints directory.
+    """
+    destDir = runDir / "checkpoints"
+    destDir.mkdir(parents=True, exist_ok=True)
+    if not srcCkptDir.exists():
+        logger.warning(f"No checkpoint directory to copy at {srcCkptDir}; skipping.")
+        return destDir
+
+    logger.info(f"Copying checkpoints from {srcCkptDir} to {destDir}")
+    print(f"Copying checkpoints from {srcCkptDir} to {destDir}")
+    for ckptFile in srcCkptDir.glob("*.ckpt"):
+        shutil.copy2(ckptFile, destDir / ckptFile.name)
+    return destDir
+
+
+# --------------------------------------------------------------------------- #
 # Tiled checkpoint completeness
 # --------------------------------------------------------------------------- #
 
@@ -332,14 +361,18 @@ def read_run_metrics(runDir: Path) -> Dict[str, float]:
     (header = metric names) into the run directory; `metrics.yaml` is an
     older/alternate format some callers may still write. csv wins if both
     are present, since it's what the actual pipeline produces.
+
+    Prefer metric_results_test.csv over metric_results_val.csv and
+    metric_results.csv, and prefer metric_results_val.csv over metric_results.csv.
     """
-    csvPath = runDir / "metric_results.csv"
-    if csvPath.exists():
-        with open(csvPath, newline="") as f:
-            rows = list(csv.DictReader(f))
-        if not rows:
-            return {}
-        return {k: float(v) for k, v in rows[0].items()}
+    for csv_name in ["metric_results_test.csv", "metric_results_val.csv", "metric_results.csv"]:
+        csvPath = runDir / csv_name
+        if csvPath.exists():
+            with open(csvPath, newline="") as f:
+                rows = list(csv.DictReader(f))
+            if not rows:
+                return {}
+            return {k: float(v) for k, v in rows[0].items()}
 
     yamlPath = runDir / "metrics.yaml"
     if yamlPath.exists():
