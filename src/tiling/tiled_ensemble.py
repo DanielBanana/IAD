@@ -26,6 +26,7 @@ from torchvision.transforms.v2 import Compose, Resize, Transform
 # ANOMALIB
 from anomalib.data import AnomalibDataModule, ImageBatch, get_datamodule, AnomalibDataModule, PredictDataset as InferenceDataset
 from anomalib.data.utils import ValSplitMode, TestSplitMode
+
 from anomalib.models import AnomalibModule, get_model
 from anomalib.pre_processing import PreProcessor
 from anomalib.pre_processing.utils.transform import get_exportable_transform
@@ -64,7 +65,8 @@ from tiling.jobs import (
     AOIFiftyOneVisJobGenerator,
     AOIThresholdingJobGenerator,
     AOISmoothingJobGenerator,
-    get_ensemble_model
+    get_ensemble_model,
+    Split
 )
 import platform
 
@@ -473,14 +475,14 @@ class EvalTiledEnsemble(Pipeline):
         
         validationSplit: ValSplitMode = self.dataModuleConfig.val_split_mode
         testSplit: TestSplitMode = self.dataModuleConfig.test_split_mode
-        modes: List[InferenceData] = []
+        modes: List[Split] = []
 
         logger.info(f"Validation split for evaluation pipeline is set to: {validationSplit}")
         if validationSplit == ValSplitMode.NONE:
             logger.info("This means no Evaluation is done on the to determine the decision tresholds")
         else:
             logger.info("Evaluating performance of trained model to determine decision thresholds")
-            modes.append(InferenceData.VAL)
+            modes.append(Split.VAL)
 
         logger.info(f"Validation split for evaluation pipeline is set to: {testSplit}")
         if testSplit == TestSplitMode.NONE:
@@ -490,7 +492,7 @@ class EvalTiledEnsemble(Pipeline):
                 raise PipelineError(f"Can not run test if no validation ran before hand.")
             else:
                 logger.info("Testing to determine quality on unseen data")
-                modes.append(InferenceData.TEST)
+                modes.append(Split.TEST)
 
         statsDir = self.ckptPath.parent if self.ckptPath is not None and self.rootDir is None else self.rootDir
 
@@ -536,7 +538,7 @@ class EvalTiledEnsemble(Pipeline):
                     ),
                 )
 
-            if mode == InferenceData.VAL:
+            if mode == Split.VAL:
                 # 5. calculate statistics used for inference
                 runners.append(SerialRunner(AOIStatisticsJobGenerator(statsDir)))
 
@@ -712,7 +714,7 @@ class InferenceTiledEnsemble(Pipeline):
         logger.debug("Setting up JobGenerators")
 
         inferenceJobGenerator = InferenceJobGenerator(
-            InferenceData.VAL,
+            Split.INFERENCE,
             seed=seed,
             accelerator=self.inferencerConfig.accelerator,
             root_dir=self.root_dir,
@@ -763,7 +765,7 @@ class InferenceTiledEnsemble(Pipeline):
 
         # # 6. visualize predictions
         # if self.dataset is not None:
-        runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.dataset, datamodule=self.datamodule, modelName=self.modelConfig.name)))
+        runners.append(SerialRunner(AOIFiftyOneVisJobGenerator(FO_Dataset=self.dataset, datamodule=self.datamodule, modelName=self.modelConfig.name, split=Split.INFERENCE)))
 
         # # calculate metrics
         # runners.append(
@@ -1143,12 +1145,12 @@ class InferenceJobGenerator(JobGenerator):
 
     Args:
         root_dir (Path): Root directory to save checkpoints, stats and images.
-        data_source (InferenceData): Whether to predict on validation set. If false use test set.
+        data_source (Split): Whether to predict on validation set. If false use test set.
     """
 
     def __init__(
         self,
-        data_source: InferenceData,
+        data_source: Split,
         seed: int,
         accelerator: str,
         root_dir: Path,
@@ -1256,12 +1258,12 @@ class InferenceJobGenerator(JobGenerator):
                         accelerator=resolved_accelerator,
                         root_dir=self.root_dir,
                         batch_arg_name="eval_batch_size",
-                        method="validate" if self.data_source == InferenceData.VAL else "test",
+                        method="validate" if self.data_source == Split.VAL else "test",
                     )
 
 
                 dataloader = datamodule.test_dataloader()
-                if self.data_source == InferenceData.VAL:
+                if self.data_source == Split.VAL:
                     dataloader = datamodule.val_dataloader()
                     print(f"Using validation data")
                 else:
@@ -1399,12 +1401,12 @@ class FOPredictJobGenerator(JobGenerator):
 
     Args:
         root_dir (Path): Root directory to save checkpoints, stats and images.
-        data_source (InferenceData): Whether to predict on validation set. If false use test set.
+        data_source (Split): Whether to predict on validation set. If false use test set.
     """
 
     def __init__(
         self,
-        data_source: InferenceData,
+        data_source: Split,
         seed: int,
         accelerator: str,
         root_dir: Path,
@@ -1488,7 +1490,7 @@ class FOPredictJobGenerator(JobGenerator):
 
             # pick the dataloader based on predict data
             dataloader = datamodule.test_dataloader()
-            if self.data_source == InferenceData.VAL:
+            if self.data_source == Split.VAL:
                 dataloader = datamodule.val_dataloader()
 
             # pass root_dir to engine so all models in ensemble have the same root dir

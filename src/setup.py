@@ -999,6 +999,21 @@ class TilingPipelineConfig:
                 d[k] = v
         return d
 
+    def __str__(self) -> str:
+        return (
+            f"{self.__class__.__name__}:\n"
+            f"  image_size={self.image_size}\n"
+            f"  tile_size={self.tile_size}\n"
+            f"  stride={self.stride}\n"
+            f"  seam_smoothing={self.seam_smoothing}\n"
+            f"  root_dir={self.root_dir}\n"
+            f"  normalization_stage={self.normalization_stage}\n"
+            f"  thresholding_stage={self.thresholding_stage}"
+        )
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
     @classmethod
     def _parse_enum(cls, enum_cls: type[Enum], value: Any, default: Enum) -> Enum:
         if isinstance(value, enum_cls):

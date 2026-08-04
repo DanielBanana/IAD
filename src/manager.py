@@ -33,7 +33,7 @@ from lightning.pytorch import Callback
 from setup import create_model
 from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, InferenceTiledEnsemble
 from tiling.tilingCheckpoints import checkTiledCheckpointsExist
-from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles
+from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles, copy_checkpoints
 from run_paths import resolve_checkpoint_paths, resolve_wandb_manifest_dir, resolve_output_dir
 from setup import (
     DataModuleConfig,
@@ -463,7 +463,7 @@ class AnomalyDetectionManager:
         self.state |= ManagerState.MODEL_LOADED
         # loading a new model invalidates any previous training/tiling state
         self.state &= ~(ManagerState.TILING_CONFIGURED | ManagerState.TRAINED | ManagerState.CHECKPOINT_AVAILABLE)
-        logger.info(f"Successfully loaded model {self.model.name}: {self.model}")
+        logger.info(f"Successfully loaded model {self.model.name}")
 
     def setupTiling(self, tilingPipelineConfig: TilingPipelineConfig) -> bool:
         """
@@ -831,7 +831,8 @@ class AnomalyDetectionManager:
         else:
             self.state |= ManagerState.CHECKPOINT_AVAILABLE
         self._require("eval")
-        self._prepareRun(evalConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
+        ctx = self._prepareRun(evalConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
+        copy_checkpoints(self.ckptDir, ctx.outputDir)
         self._evalTiledModel(
             datasetSession=datasetSession, evalConfig=evalConfig,
             datamoduleConfig=datamoduleConfig, modelConfig=modelConfig,

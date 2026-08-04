@@ -5,6 +5,7 @@
 # Changed by Daniel Pommer, TH Nuremberg, 2026
 
 # GENERAL
+from enum import Enum
 import json
 import logging
 import fiftyone as fo
@@ -55,6 +56,14 @@ from data.anomaly_datasets import FODataModule
 from setup import create_model, TilingPipelineConfig, ModelConfig
 
 logger = logging.getLogger(__name__)
+
+class Split(Enum):
+    """Enum for dataset splits."""
+
+    TRAIN = "train"
+    VAL = "val"
+    TEST = "test"
+    INFERENCE = "inference"
 
 
 class AOIStatisticsJob(Job):
@@ -460,7 +469,7 @@ class AOIMetricsCalculationJob(Job):
         prev_stage_result: Tuple[List[ImageBatch],Any] | List[ImageBatch],
         root_dir: Path,
         evaluator: Evaluator,
-        split: InferenceData,
+        split: Split,
         saveName: str = "metric_results.csv"
     ) -> None:
         super().__init__()
@@ -493,7 +502,7 @@ class AOIMetricsCalculationJob(Job):
         logger.debug(f"{self.name}: Sample: {self.predictions[0].anomaly_map}")
 
 
-        if self.split == InferenceData.TEST:
+        if self.split == Split.TEST:
             for batch in tqdm(self.predictions, desc="Calculating metrics"):
                 self.evaluator.on_test_batch_end(None, None, None, batch=batch, batch_idx=0)
 
@@ -505,7 +514,7 @@ class AOIMetricsCalculationJob(Job):
                     metric.cpu()
 
         else:
-            # split has to be InferenceData.VAL
+            # split has to be Split.VAL
             for batch in tqdm(self.predictions, desc="Calculating metrics"):
                 self.evaluator.on_validation_batch_end(None, None, None, batch=batch, batch_idx=0)
 
@@ -565,7 +574,7 @@ class AOIMetricsCalculationJobGenerator(JobGenerator):
         root_dir: Path,
         modelConfig: ModelConfig,
         tile_size: Tuple[int,int],
-        split:InferenceData,
+        split:Split,
         saveName: str = "metric_results.csv"
     ) -> None:
         """
@@ -899,7 +908,7 @@ class AOIFiftyOneVisJob(Job):
 
     name = "51Visualize"
 
-    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, datamodule: FODataModule, modelName:str, split:InferenceData) -> None:
+    def __init__(self, prev_stage_result: Tuple[List[ImageBatch], dict[str, Any]] | List[ImageBatch], FO_Dataset:fo.Dataset, datamodule: FODataModule, modelName:str, split:Split) -> None:
         super().__init__()
         if isinstance(prev_stage_result, Tuple):
             self.predictions = prev_stage_result[0]
@@ -948,7 +957,7 @@ class AOIFiftyOneVisJob(Job):
                 except:
                     logger.error("Segmentation prediction mask not available.")
 
-                enum_values = {getattr(member, "value", member) for member in InferenceData}
+                enum_values = {getattr(member, "value", member) for member in [Split.VAL, Split.TEST]}
 
                 if hasattr(sample, 'tags'):
                     if isinstance(sample.tags, list):
@@ -1005,7 +1014,7 @@ class AOIFiftyOneVisJobGenerator(JobGenerator):
         root_dir (Path): Root directory where images will be saved (root/images).
     """
 
-    def __init__(self, FO_Dataset:fo.Dataset, datamodule:FODataModule, modelName:str, split:InferenceData) -> None:
+    def __init__(self, FO_Dataset:fo.Dataset, datamodule:FODataModule, modelName:str, split:Split) -> None:
         self.datamodule = datamodule
         self.FO_Dataset = FO_Dataset
         self.modelName = modelName
