@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, List, Tuple, Optional, Dict
 from dataclasses import dataclass
 from typing import Optional
+from enum import Enum
 
 # ANOMALIB
 from anomalib.models.components import AnomalibModule
@@ -207,7 +208,11 @@ def configure_logging(logDir: Path, configDir: Path, logConfigFile: Optional[Pat
                 config["handlers"][handlerName]["filename"] = logDir / filename
     dictConfig(config=config)
 
-
+class Action(str, Enum):
+    SETUP_TILING = "setup_tiling"
+    TRAIN = "train"
+    EVAL = "eval"
+    INFERENCE = "inference"
 class AnomalyDetectionManager:
 
     # Each action declares what state it needs. Single source of truth —
