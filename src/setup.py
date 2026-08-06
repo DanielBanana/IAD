@@ -571,6 +571,20 @@ def loadModelConfig(configDir:Path, modelConfigPath:Path, copyDir:Path|None=None
     return model_config, pre_processor_path, post_processor_path, evaluator_path
 
 def resolve_product_config_path(path_str: str, product_yaml_path: Path, config_dir: Optional[Path] = None, subdir: Optional[str] = None) -> Path:
+    """Resolve a path relative to the product yaml path and the general config path. Searches in subdir if available
+
+    Args:
+        path_str (str): Name of a file or relative path to a file from the product config yaml
+        product_yaml_path (Path): Path to the product configuration YAML file
+        config_dir (Optional[Path], optional): Path to the general configuration directory. Defaults to None.
+        subdir (Optional[str], optional): Name of the subdirectory to search in. Defaults to None.
+
+    Raises:
+        FileNotFoundError: If the resolved path does not exist.
+
+    Returns:
+        Path: The resolved path.
+    """
     if Path(path_str).is_absolute():
         return Path(path_str)
 
@@ -734,6 +748,7 @@ class DatasetSession:
     categories: List[str]
     category: Optional[List[str]] = None
     config: Optional[DatasetConfig] = None
+    path: Optional[Path] = None
     # FO_DatasetView: Optional[fo.DatasetView] = None
     AL_PredictDataset: Optional[PredictDataset] = None
     currentSession: Optional[fo.Session] = None  # fo.Session
@@ -756,9 +771,13 @@ class DatasetSession:
         """Load a dataset from MongoDB and track it here."""
         if fo.dataset_exists(name=datasetName):
             FO_Dataset = fo.load_dataset(name=datasetName)
-
             try:
-                session:DatasetSession = cls(datasetName=datasetName, categories=list(FO_Dataset.distinct("category.label")), FO_DatasetOriginal=FO_Dataset, FO_Dataset=FO_Dataset)
+                session:DatasetSession = cls(
+                    datasetName=datasetName,
+                    categories=list(FO_Dataset.distinct("category.label")),
+                    FO_DatasetOriginal=FO_Dataset,
+                    FO_Dataset=FO_Dataset
+                )
             except:
                 logger.error(f"Could not create DatasetSession.")
                 raise ValueError
@@ -838,7 +857,14 @@ class DatasetSession:
             return datasetSession
         else:
             if FO_Dataset is not None:
-                session = DatasetSession(datasetName=datasetName, FO_DatasetOriginal=FO_Dataset, FO_Dataset=FO_Dataset, AL_PredictDataset=AL_PredictDataset, categories=FO_Dataset.distinct("category.label"))
+                session = DatasetSession(
+                    datasetName=datasetName,
+                    FO_DatasetOriginal=FO_Dataset,
+                    FO_Dataset=FO_Dataset,
+                    AL_PredictDataset=AL_PredictDataset,
+                    categories=FO_Dataset.distinct("category.label"),
+                    path=datasetPath
+                    )
                 logger.info(f"There are {session.FO_Dataset.count()} images in the {datasetName} dataset.")
                 logger.info(f"There are {len(session.categories)} categorie(s) in the {datasetName} dataset.")
                 logger.info(session.categories)
@@ -1401,7 +1427,6 @@ TModelConfig = TypeVar("TModelConfig", bound=BaseModelConfig)
 @dataclass
 class Product:
     name: str
-    logFileName: str
     modelConfig: ModelConfig
     modelConfigPath: Path
     modelTrainingDir: Optional[Path]
@@ -1447,7 +1472,7 @@ class Product:
             for this product/model/selection exists (yet).
         """
         try:
-            resolved = resolve_run_dir(
+            resolvedRunDir, modelName = resolve_run_dir(
                 baseOutputDir=Path(baseOutputDir),
                 category=self.datasetConfig.category,
                 modelName=self.modelConfig.name,
@@ -1458,13 +1483,19 @@ class Product:
                 f"refresh_training_dir: no complete '{self.selection}' run found for "
                 f"{self.modelConfig.name}/{self.datasetConfig.category} under {baseOutputDir}"
             )
-            resolved = None
+            resolvedRunDir = None
 
-        self.modelTrainingDir = resolved
-        return resolved
+        self.modelTrainingDir = resolvedRunDir
+        # self.modelConfig.name = modelName
+        return resolvedRunDir
 
 
 def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = None, baseOutputDir: Optional[Path] = None) -> Product:
+    training_dir: Path | None
+    modelName: str | None
+    modelConfigFile: str | None
+    selection: str
+
     with product_yaml_path.open("r", encoding="utf-8") as f:
         product_config = yaml.safe_load(f)
 
@@ -1479,21 +1510,29 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
     if not isinstance(product_name, str) or not product_name:
         raise ValueError("product field must be a non-empty string")
 
-    logging_config = product_config.get("logging", {})
-    if not isinstance(logging_config, dict):
-        raise TypeError("logging config must be a dict")
-    log_file_name = logging_config.get("logFileName")
-    if not isinstance(log_file_name, str) or not log_file_name:
-        raise ValueError("logging.logFileName must be a non-empty string")
-
     model_section = product_config.get("model")
     if not isinstance(model_section, dict):
         raise TypeError("model config must be a dict")
 
-    model_config_name = model_section.get("config")
-    if not isinstance(model_config_name, str) or not model_config_name:
-        raise ValueError("model.config must be a non-empty string")
-    model_config_path = resolve_product_config_path(model_config_name, product_yaml_path, config_dir, subdir="Models")
+    # If the key 'config' is present, validate it's a non-empty string.
+    # If the key is missing entirely, leave modelConfigFile as None for the caller to handle.
+    if isinstance(model_section, dict) and "config" in model_section:
+        modelConfigFile = model_section["config"]
+        if not isinstance(modelConfigFile, str) or not modelConfigFile:
+            raise ValueError("model.config must be a non-empty string")
+    else:
+        modelConfigFile = None
+
+    if isinstance(model_section, dict) and "name" in model_section:
+        modelName = model_section["name"]
+        if not isinstance(modelName, str) or not modelName:
+            raise ValueError("model.name must be a non-empty string")
+    else:
+        modelName = None
+
+    selection = model_section.get("selection", "latest")
+    if selection not in ("latest", "best"):
+        raise ValueError(f"model.selection must be 'latest' or 'best', got {selection!r}")
 
     # with model_config_path.open("r", encoding="utf-8") as f:
     #     model_yaml = yaml.safe_load(f)
@@ -1509,7 +1548,6 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
     # if model_cls is None:
     #     raise ValueError(f"Unsupported model '{model_class_path}' in model YAML")
 
-    modelConfig:ModelConfig = ModelConfig.from_yaml(model_config_path, config_dir=config_dir)
 
     # modelConfig = model_cls.load_model_config_from_yaml(model_config_path, config_dir=config_dir)
     dataset_section = product_config.get("dataset", None)
@@ -1518,11 +1556,9 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
         raise AttributeError("No dataset section found in product yaml.")
     category = str(dataset_section.get("category", None)) if isinstance(dataset_section, dict) else None
 
-    selection = model_section.get("selection", "latest")
-    if selection not in ("latest", "best"):
-        raise ValueError(f"model.selection must be 'latest' or 'best', got {selection!r}")
-
     training_dir = model_section.get("trainingDir", None)
+
+    _modelName: str | None = None
     if training_dir is None:
         if baseOutputDir is None:
             raise ValueError(
@@ -1530,12 +1566,41 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
                 "trainingDir must be given explicitly, or baseOutputDir must be given so the "
                 f"'{selection}' run can be resolved automatically"
             )
-        training_dir:Path|None = resolve_run_dir(
+        # resolve_run_dir returns a tuple (training_dir, modelName)
+
+        training_dir, _modelName = resolve_run_dir(
             baseOutputDir=Path(baseOutputDir),
             category=category,
-            modelName=modelConfig.name,
+            modelName=modelName,
             selection=selection,
         )
+
+    if modelConfigFile is None:
+        if modelName is None:
+            if _modelName is None:
+                raise ValueError(
+                    f"modelConfigFile and modelName are not set in the product and could not be resolved from selection {selection}."
+                    "Either modelConfigFile or modelName must be given explicitly, or selection must be given so the "
+                    f"'{selection}' run can be resolved automatically"
+                )
+            else:
+                modelName = _modelName
+                modelConfigFile = f"{modelName}.yaml"
+        else:
+            modelConfigFile = f"{modelName}.yaml"
+    else:
+        if modelName is None:
+            modelName = Path(modelConfigFile).stem
+        else:
+            if modelName != Path(modelConfigFile).stem:
+                raise Warning(
+                    f"modelConfigFile '{modelConfigFile}' and modelName '{modelName}' are inconsistent. "
+                )
+
+    model_config_path = resolve_product_config_path(modelConfigFile, product_yaml_path, config_dir, subdir="Models")
+
+    modelConfig:ModelConfig = ModelConfig.from_yaml(model_config_path, config_dir=config_dir)
+
 
     # if weights_path
     # model_weights_path = Path(weights_path)
@@ -1598,7 +1663,6 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
 
     return Product(
         name=product_name,
-        logFileName=log_file_name,
         modelConfig=modelConfig,
         modelConfigPath=model_config_path,
         modelTrainingDir=model_training_dir,
