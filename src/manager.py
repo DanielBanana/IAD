@@ -129,6 +129,12 @@ class ManagerState(IntFlag):
 # Create the general logger
 logger = logging.getLogger(__name__)
 
+# Shared with the per-run debug.log/info.log handlers (see
+# AnomalyDetectionManager._attach_run_log_handlers) so run-directory logs are
+# formatted the same way as the general ones.
+_DETAILED_LOG_FORMAT = "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s"
+_DETAILED_LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S%z"
+
 # dictConfig() replaces the root logger's handlers wholesale, so calling it
 # more than once per process would silently drop file logging for anything
 # that happened before the *last* call. AnomalyDetectionManager instances are
@@ -145,8 +151,8 @@ def _default_logging_config() -> None:
         "formatters": {
             "simple": {"format": "%(levelname)s: %(message)s"},
             "detailed": {
-                "format": "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s",
-                "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+                "format": _DETAILED_LOG_FORMAT,
+                "datefmt": _DETAILED_LOG_DATEFMT,
             },
         },
         "handlers": {
@@ -255,6 +261,11 @@ class AnomalyDetectionManager:
         self.configDir:Path = configDir
         self.ckptDir: Optional[Path] = None
 
+        # Extra debug.log/info.log handlers mirroring the root logger into the
+        # currently active run's directory, on top of the general log files.
+        # See _attach_run_log_handlers / _detach_run_log_handlers.
+        self._runLogHandlers: List[logging.Handler] = []
+
         self.model: Optional[AnomalibModule] = None
         self.modelConfig: Optional[ModelConfig] = None
         self.modelConfigPath: Optional[Path] = None
@@ -331,6 +342,43 @@ class AnomalyDetectionManager:
             self.model.visualizer.output_dir = outputDir / "images"
         else:
             logger.info("No model set; cannot adjust visualizer output_dir.")
+
+    def _attach_run_log_handlers(self, runDir: Path) -> None:
+        """
+        Mirror root-logger output into `<runDir>/debug.log` and `<runDir>/info.log`,
+        in addition to the general log files under self.logDir. Only one run's
+        handlers are active at a time -- starting a new run detaches the
+        previous run's handlers first.
+
+        Parameters
+        ----------
+        runDir : Path
+            Directory of the run that should receive its own copy of the logs
+        """
+        self._detach_run_log_handlers()
+
+        formatter = logging.Formatter(_DETAILED_LOG_FORMAT, datefmt=_DETAILED_LOG_DATEFMT)
+        debugHandler = logging.FileHandler(runDir / "debug.log", encoding="utf-8")
+        debugHandler.setLevel(logging.DEBUG)
+        debugHandler.setFormatter(formatter)
+        infoHandler = logging.FileHandler(runDir / "info.log", encoding="utf-8")
+        infoHandler.setLevel(logging.INFO)
+        infoHandler.setFormatter(formatter)
+
+        root = logging.getLogger()
+        root.addHandler(debugHandler)
+        root.addHandler(infoHandler)
+        self._runLogHandlers = [debugHandler, infoHandler]
+
+    def _detach_run_log_handlers(self) -> None:
+        """Stop mirroring logs into the previously active run's directory, if any."""
+        if not self._runLogHandlers:
+            return
+        root = logging.getLogger()
+        for handler in self._runLogHandlers:
+            root.removeHandler(handler)
+            handler.close()
+        self._runLogHandlers = []
 
     def has_state(self, flag: ManagerState) -> bool:
         """
@@ -538,10 +586,6 @@ class AnomalyDetectionManager:
         """
         product = loadProductFromYaml(productConfigPath, config_dir=configDir, baseOutputDir=outputPath)
         manager = cls(outputDir=outputPath, configDir=configDir)
-        # import timm
-        # print("TIMM LOADED FROM:", timm.__file__)
-        # print("MODEL REGISTERED:", 'vit_base_patch14_reg4_dinov2' in timm.list_models())
-        # print("ENCODER_NAME REPR:", repr(product.modelConfig.to_dict().get("encoder_name")))
         manager.generateModel(modelConfig=product.modelConfig)
         manager.setupTiling(product.tilingPipelineConfig)
         manager.tilingConfigPath = product.tilingConfigPath
@@ -770,6 +814,11 @@ class AnomalyDetectionManager:
         effective_config = serialize_effective_config(trainerConfig, modelConfig, datamoduleConfig, tilingPipelineConfig, datasetSession)
         print(effective_config)
         write_run_manifest(outputDir, effective_config)
+
+        # Logged before attaching the run's own handlers, so this pointer only
+        # ends up in the general log files, not in the run's own debug/info.log.
+        logger.info(f"Run '{runId}' started. Detailed logs for this run are also written to {outputDir} (debug.log, info.log).")
+        self._attach_run_log_handlers(outputDir)
 
         self.outputDir, self.runId = outputDir, runId
         self._apply_visualizer_output_dir(outputDir)

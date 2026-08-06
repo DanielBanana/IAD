@@ -5,9 +5,6 @@
 
 product: "fabric_03"
 
-logging:
-  logFileName: "general.log"
-
 model:
   name: "InpFormer"
   config: InpFormer.yaml

@@ -5,9 +5,6 @@
 
 product: "cable"
 
-logging:
-  logFileName: "general.log"
-
 model:
   name: "InpFormer"
   config: InpFormer.yaml

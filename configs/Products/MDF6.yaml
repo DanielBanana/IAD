@@ -5,9 +5,6 @@
 
 product: "MDF6"
 
-logging:
-  logFileName: "general.log"
-
 model:
   name: "padim"
   config: "padim.yaml"
