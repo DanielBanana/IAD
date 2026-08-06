@@ -555,10 +555,10 @@ DEFAULT_BEST_METRIC = "image_F1Score"
 def resolve_run_dir(
     baseOutputDir: Path,
     category: Optional[str],
-    modelName: str,
+    modelName: Optional[str],
     selection: str = "latest",
     metric: str = DEFAULT_BEST_METRIC,
-) -> Path | None:
+) -> Tuple[Path | None, str | None]:
     """
     Pick a single run directory for a product+model, so a `Product` config
     doesn't have to hardcode `trainingDir`/`weights_path` for a run that a
@@ -573,7 +573,7 @@ def resolve_run_dir(
         Output directory for training or inference runs. New runs should go here and here we look for old runs
     category : Optional[str]
         For what kind of product are we training
-    modelName : str
+    modelName : Optional[str]
         Name of the model we are training
     selection : str (optional)
         What kind of selection criteria we are using to find a previous run. Either `latest` or `best`. Default is `"latest"`.
@@ -596,15 +596,15 @@ def resolve_run_dir(
         if not runs:
             print(f"There has been found no previous latest run for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
             logger.info(f"There has been found no previous latest run been found for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
-            return None
-        return runs[0].runDir
+            return None, None
+        return runs[0].runDir, runs[0].modelName
     elif selection == "best":
         run = best_run(baseOutputDir, productName=category, metric=metric, mode="max", modelName=modelName)
         if run is None:
             print(f"There has been found no previous best run for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
             logger.info(f"There has been found no previous best run been found for {baseOutputDir}/<datasetName>/{category}/{modelName}. \n If you are training a new model this is assumed to be the case.")
-            return None
-        return run.runDir
+            return None, None
+        return run.runDir, run.modelName
     else:
         raise ValueError(f"selection must be 'latest' or 'best', got {selection!r}")
 
