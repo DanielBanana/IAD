@@ -23,7 +23,7 @@ inferencer:
   config: "Inference.yaml"
 
 dataset:
-  name: "MVTecADShort"
+  name: "MVTecAD"
   category: "cable"
   split:
     - "train"

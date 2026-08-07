@@ -1460,6 +1460,12 @@ class Product:
         "latest"/"best". Only re-runs the resolution lookup - no config YAML is
         re-parsed and no model is rebuilt. Updates self.modelTrainingDir in place.
 
+        If the registry lookup finds nothing (e.g. no runs/*/manifest.yaml
+        exists yet under baseOutputDir), the existing modelTrainingDir is left
+        untouched instead of being cleared -- this keeps an explicitly pinned
+        `model.trainingDir` (set in the product yaml, bypassing the registry
+        entirely) working across repeated inference_prep calls.
+
         Parameters
         ----------
         baseOutputDir : Path
@@ -1468,8 +1474,9 @@ class Product:
         Returns
         -------
         _name_ : Optional[Path]
-            The freshly resolved training directory, or None if no complete run
-            for this product/model/selection exists (yet).
+            The freshly resolved training directory, or the existing
+            modelTrainingDir if no complete run for this product/model/selection
+            was found in the registry.
         """
         try:
             resolvedRunDir, modelName = resolve_run_dir(
@@ -1479,11 +1486,15 @@ class Product:
                 selection=self.selection,
             )
         except FileNotFoundError:
+            resolvedRunDir = None
+
+        if resolvedRunDir is None:
             logger.info(
                 f"refresh_training_dir: no complete '{self.selection}' run found for "
-                f"{self.modelConfig.name}/{self.datasetConfig.category} under {baseOutputDir}"
+                f"{self.modelConfig.name}/{self.datasetConfig.category} under {baseOutputDir}; "
+                f"keeping existing modelTrainingDir={self.modelTrainingDir}"
             )
-            resolvedRunDir = None
+            return self.modelTrainingDir
 
         self.modelTrainingDir = resolvedRunDir
         # self.modelConfig.name = modelName
