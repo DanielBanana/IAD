@@ -1586,6 +1586,16 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
             selection=selection,
         )
 
+    # True only when the user gave neither model.name nor model.config and let
+    # `selection` pick the model itself (not just which run of a pinned model
+    # to use) -- the "I don't care which model, just give me the best one"
+    # case. The trainer section is model-specific (hyperparameters like
+    # max_epochs/batch size differ per model), so whatever the yaml has under
+    # `trainer.config` can't be trusted here: it was written for whatever
+    # model the author had in mind, not necessarily the one selection ends up
+    # resolving to. See the trainer_config_name derivation below.
+    model_auto_resolved = modelConfigFile is None and modelName is None
+
     if modelConfigFile is None:
         if modelName is None:
             if _modelName is None:
@@ -1650,8 +1660,23 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
     if not isinstance(trainer_section, dict):
         raise TypeError("trainer config must be a dict")
     trainer_config_name = trainer_section.get("config")
-    if not isinstance(trainer_config_name, str) or not trainer_config_name:
+
+    if model_auto_resolved:
+        # Model type was picked by `selection`, not pinned by the user, so
+        # derive the matching trainer config from the resolved model name
+        # (same "<Name>.yaml" convention as the model config itself) instead
+        # of trusting a possibly stale/mismatched trainer.config in the yaml.
+        resolved_trainer_config_name = f"Training_{modelName}.yaml"
+        if isinstance(trainer_config_name, str) and trainer_config_name and trainer_config_name != resolved_trainer_config_name:
+            logger.info(
+                f"model.selection resolved model '{modelName}' automatically; ignoring "
+                f"trainer.config '{trainer_config_name}' from the product yaml (trainer "
+                f"settings are model-specific) and using '{resolved_trainer_config_name}' instead."
+            )
+        trainer_config_name = resolved_trainer_config_name
+    elif not isinstance(trainer_config_name, str) or not trainer_config_name:
         raise ValueError("trainer.config must be a non-empty string")
+
     trainer_config_path = resolve_product_config_path(trainer_config_name, product_yaml_path, config_dir, subdir="Trainer")
     trainer_config = TrainerConfig.load_trainer_config_from_yaml(trainer_config_path)
     datamoduleConfig = DataModuleConfig.load_datamodule_config_from_yaml(trainer_config_path)
