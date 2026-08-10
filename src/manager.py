@@ -35,7 +35,7 @@ from setup import create_model
 from tiling.tiled_ensemble import TrainTiledEnsemble, EvalTiledEnsemble, InferenceTiledEnsemble
 from tiling.tilingCheckpoints import checkTiledCheckpointsExist
 from run_registry import generate_run_id, serialize_effective_config, write_run_manifest, RunConfigFiles, copy_checkpoints
-from run_paths import resolve_checkpoint_paths, resolve_wandb_manifest_dir, resolve_output_dir
+from run_paths import resolve_checkpoint_paths, resolve_stats_path, resolve_wandb_manifest_dir, resolve_output_dir
 from setup import (
     DataModuleConfig,
     TrainerConfig, 
@@ -92,7 +92,7 @@ class RunContext:
 class ManagerError(Exception):
     """Base class for all AnomalyDetectionManager errors."""
 
-class ManagerStateError(ManagerError):
+class ManagerReadinessError(ManagerError):
     """Raised when an action is requested before its prerequisites are met.
     Carries `missing` so a frontend can render actionable messages without
     parsing the exception text.
@@ -101,18 +101,29 @@ class ManagerStateError(ManagerError):
         super().__init__(message)
         self.missing = missing or []
 
-class NoModelLoadedError(ManagerStateError): ...
-class NoDatasetLoadedError(ManagerStateError): ...
-class TilingNotConfiguredError(ManagerStateError): ...
-class ModelNotTrainedError(ManagerStateError): ...
-class CheckpointNotFoundError(ManagerStateError): ...
+class NoModelLoadedError(ManagerReadinessError): ...
+class NoDatasetLoadedError(ManagerReadinessError): ...
+class TilingNotConfiguredError(ManagerReadinessError): ...
+class CalibrationNotFoundError(ManagerReadinessError): ...
+class CheckpointNotFoundError(ManagerReadinessError): ...
+class RunPreparedError(ManagerReadinessError): ...
 
 class ConfigError(ManagerError):
     """Raised for malformed or unresolvable configuration (YAML, paths, etc.)."""
-
-class ManagerState(IntFlag):
+class Action(str, Enum):
+    SETUP_TILING = "setup_tiling"
+    TRAIN = "train"
+    EVAL = "eval"
+    INFERENCE = "inference"
+class ManagerReadiness(IntFlag):
     """
-    Gives feedback about the state of the Manager and what kind of command can be run. train()/eval()/inference()
+    An accumulating checklist of prerequisites the Manager has satisfied so
+    far (model loaded, dataset loaded, ...), used to decide whether
+    train()/eval()/inference()/setupTiling() can run yet. Not mutually
+    exclusive -- multiple flags accumulate over time as prerequisites are
+    met (see _REQUIREMENTS) -- so this is a different kind of "state" than
+    a single-value session/board status (see status.SessionStatus,
+    hardware.duetboard.duetboard.BoardStatus).
 
     Parameters
     ----------
@@ -124,8 +135,10 @@ class ManagerState(IntFlag):
     DATASET_LOADED = auto()
     TILING_CONFIGURED = auto()
     RUN_PREPARED = auto()      # paths resolved, callbacks/logger set up
-    TRAINED = auto()           # a train() has completed for the current model+dataset
     CHECKPOINT_AVAILABLE = auto()
+    CALIBRATED = auto()        # stats.json (anomaly thresholds) available -- produced by
+                                # eval(), not train(); required before inference() so scores
+                                # can actually be normalized/thresholded
 
 # Create the general logger
 logger = logging.getLogger(__name__)
@@ -142,7 +155,6 @@ _DETAILED_LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S%z"
 # created repeatedly within a single console session (every load_product /
 # train_product / inference), so configuration must happen at most once.
 _logging_configured = False
-
 
 def _default_logging_config() -> None:
     """Fallback root logging config used when no logging.yaml is found."""
@@ -171,7 +183,6 @@ def _default_logging_config() -> None:
         "root": {"level": "DEBUG", "handlers": ["stderr", "stdout", "debugFile", "infoFile"]},
     }
     logging.config.dictConfig(logging_config)
-
 
 def configure_logging(logDir: Path, configDir: Path, logConfigFile: Optional[Path] = None) -> None:
     """
@@ -208,47 +219,46 @@ def configure_logging(logDir: Path, configDir: Path, logConfigFile: Optional[Pat
                 config["handlers"][handlerName]["filename"] = logDir / filename
     dictConfig(config=config)
 
-class Action(str, Enum):
-    SETUP_TILING = "setup_tiling"
-    TRAIN = "train"
-    EVAL = "eval"
-    INFERENCE = "inference"
-class AnomalyDetectionManager:
 
+
+class AnomalyDetectionManager:
     # Each action declares what state it needs. Single source of truth —
     # used both to raise clear errors and to answer "can I do X yet?"
-    _REQUIREMENTS: Dict[str, ManagerState] = {
-        "setupTiling": ManagerState.MODEL_LOADED,
-        "train": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED,
-        "eval": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED | ManagerState.CHECKPOINT_AVAILABLE,
-        "inference": ManagerState.MODEL_LOADED | ManagerState.DATASET_LOADED | ManagerState.TILING_CONFIGURED | ManagerState.CHECKPOINT_AVAILABLE
+    _REQUIREMENTS: Dict[str, ManagerReadiness] = {
+        "setupTiling": ManagerReadiness.MODEL_LOADED,
+        "train": ManagerReadiness.MODEL_LOADED | ManagerReadiness.DATASET_LOADED | ManagerReadiness.TILING_CONFIGURED,
+        "eval": ManagerReadiness.MODEL_LOADED | ManagerReadiness.DATASET_LOADED | ManagerReadiness.TILING_CONFIGURED | ManagerReadiness.CHECKPOINT_AVAILABLE,
+        "inference": ManagerReadiness.MODEL_LOADED | ManagerReadiness.DATASET_LOADED | ManagerReadiness.TILING_CONFIGURED | ManagerReadiness.CHECKPOINT_AVAILABLE | ManagerReadiness.CALIBRATED
     }
 
-    _STATE_DESCRIPTIONS: Dict[ManagerState, str] = {
-        ManagerState.MODEL_LOADED: "Load a model with generateModel()",
-        ManagerState.DATASET_LOADED: "Load a dataset (pass a DatasetSession)",
-        ManagerState.TILING_CONFIGURED: "Configure tiling with setupTiling()",
-        ManagerState.TRAINED: "Train the model with train() before evaluating",
-        ManagerState.CHECKPOINT_AVAILABLE: "No checkpoint found — train first or point at an existing training run",
+    _STATE_DESCRIPTIONS: Dict[ManagerReadiness, str] = {
+        ManagerReadiness.MODEL_LOADED: "Load a model with generateModel()",
+        ManagerReadiness.DATASET_LOADED: "Load a dataset (pass a DatasetSession)",
+        ManagerReadiness.TILING_CONFIGURED: "Configure tiling with setupTiling()",
+        ManagerReadiness.CHECKPOINT_AVAILABLE: "No checkpoint found — train first or point at an existing training run",
+        ManagerReadiness.CALIBRATED: "No thresholds found — run eval() to calibrate before inference",
+        ManagerReadiness.RUN_PREPARED: "Internal run preparation failed. Check with program designer" # TODO when does this actually happen, can the user actually do something about it occuring.
     }
 
-    _STATE_ERROR_CLASSES: Dict[ManagerState, type[ManagerStateError]] = {
-        ManagerState.MODEL_LOADED: NoModelLoadedError,
-        ManagerState.DATASET_LOADED: NoDatasetLoadedError,
-        ManagerState.TILING_CONFIGURED: TilingNotConfiguredError,
-        ManagerState.TRAINED: ModelNotTrainedError,
-        ManagerState.CHECKPOINT_AVAILABLE: CheckpointNotFoundError,
+    _STATE_ERROR_CLASSES: Dict[ManagerReadiness, type[ManagerReadinessError]] = {
+        ManagerReadiness.MODEL_LOADED: NoModelLoadedError,
+        ManagerReadiness.DATASET_LOADED: NoDatasetLoadedError,
+        ManagerReadiness.TILING_CONFIGURED: TilingNotConfiguredError,
+        ManagerReadiness.CHECKPOINT_AVAILABLE: CheckpointNotFoundError,
+        ManagerReadiness.CALIBRATED: CalibrationNotFoundError,
+        ManagerReadiness.RUN_PREPARED: RunPreparedError
     }
 
     # Priority order when several things are missing at once — report the
     # earliest step in the pipeline first, since fixing it is usually a
     # prerequisite for the others anyway.
-    _STATE_PRIORITY: List[ManagerState] = [
-        ManagerState.MODEL_LOADED,
-        ManagerState.DATASET_LOADED,
-        ManagerState.TILING_CONFIGURED,
-        ManagerState.TRAINED,
-        ManagerState.CHECKPOINT_AVAILABLE,
+    _STATE_PRIORITY: List[ManagerReadiness] = [
+        ManagerReadiness.MODEL_LOADED,
+        ManagerReadiness.DATASET_LOADED,
+        ManagerReadiness.TILING_CONFIGURED,
+        ManagerReadiness.CHECKPOINT_AVAILABLE,
+        ManagerReadiness.CALIBRATED,
+        ManagerReadiness.RUN_PREPARED
     ]
         
     def __init__(self, 
@@ -256,7 +266,7 @@ class AnomalyDetectionManager:
                  configDir: Path = Path("configs"),
                  ) -> None:
         
-        self.state: ManagerState = ManagerState.NONE
+        self.readiness: ManagerReadiness = ManagerReadiness.NONE
 
         if not os.path.exists(outputDir):
             os.makedirs(outputDir)
@@ -271,17 +281,18 @@ class AnomalyDetectionManager:
         # See _attach_run_log_handlers / _detach_run_log_handlers.
         self._runLogHandlers: List[logging.Handler] = []
 
+        # modelConfig/tilingPipelineConfig are kept here because they're
+        # actively derived into real objects (self.model via generateModel(),
+        # tiling setup via setupTiling()) -- not passive copies. Config file
+        # *paths* (modelConfigPath, trainerConfigPath, tilingConfigPath,
+        # inferencerConfigPath) are deliberately NOT stored on Manager:
+        # Product (setup.Product) is their source of truth, and Manager
+        # never acted on its own copies of them (see train()'s
+        # modelConfigPath/etc. parameters, used only for run archival).
         self.model: Optional[AnomalibModule] = None
         self.modelConfig: Optional[ModelConfig] = None
-        self.modelConfigPath: Optional[Path] = None
         self.modelTrainingDir: Optional[Path] = None
 
-        self.trainerConfig: Optional[TrainerConfig] = None
-        self.trainerConfigPath: Optional[Path] = None
-        self.inferencerConfig: Optional[TrainerConfig] = None
-        self.inferencerConfigPath: Optional[Path] = None
-
-        self.tilingConfigPath: Optional[Path] = None
         self.tilingPipelineConfig: Optional[TilingPipelineConfig] = None
         self.isTilingSetup = False
 
@@ -298,23 +309,29 @@ class AnomalyDetectionManager:
         """Where per-tile W&B run-id manifests for the current run live (see run_paths.py)."""
         return resolve_wandb_manifest_dir(self.outputDir)
 
-    def attachDatasetSession(self, datasetSession: DatasetSession) -> None:
+    def attachDatasetSession(self, datasetSession: Optional[DatasetSession] = None) -> DatasetSession:
         """
         Attach a DatasetSession instance to the current manager and set the appropriate state flag.
-        This allows the manager to acces things like the category we train on for adjusting paths and such
+        If no datasetSession is provided, resolve and return the currently attached one.
 
         Parameters
         ----------
-        datasetSession : DatasetSession
-            DatasetSession instance with the interesting stats
-        """
-        self.datasetSession = datasetSession
-        self.state |= ManagerState.DATASET_LOADED
-        logger.info(f"Attached dataset '{datasetSession.datasetName}' (category={datasetSession.category[0] if datasetSession.category else None}) to manager.")
+        datasetSession : Optional[DatasetSession]
+            DatasetSession instance with the interesting stats, or None to use the
+            already-attached session.
 
-    def _resolve_dataset_session(self, datasetSession: Optional[DatasetSession]) -> DatasetSession:
+        Returns
+        -------
+        DatasetSession
+            The dataset session attached to the manager.
+        """
         if datasetSession is not None:
-            self.attachDatasetSession(datasetSession)
+            self.datasetSession = datasetSession
+            self.readiness |= ManagerReadiness.DATASET_LOADED
+            logger.info(
+                f"Attached dataset '{datasetSession.datasetName}' (category={datasetSession.category[0] if datasetSession.category else None}) to manager."
+            )
+
         if self.datasetSession is None:
             raise NoDatasetLoadedError(
                 "No dataset attached. Call attachDatasetSession() or pass datasetSession=...",
@@ -385,21 +402,21 @@ class AnomalyDetectionManager:
             handler.close()
         self._runLogHandlers = []
 
-    def has_state(self, flag: ManagerState) -> bool:
+    def has_readiness(self, flag: ManagerReadiness) -> bool:
         """
-        Check if the manager state has a specific state like CHECKPOINT_AVAILABLE
+        Check if the manager's readiness includes a specific flag like CHECKPOINT_AVAILABLE
 
         Parameters
         ----------
-        flag : ManagerState
-            ManagerState IntFlag to check
+        flag : ManagerReadiness
+            ManagerReadiness IntFlag to check
 
         Returns
         -------
         _name_ : bool
-            Flag contained in state? True or False
+            Flag contained in readiness? True or False
         """
-        return flag in self.state
+        return flag in self.readiness
     
     def get_missing_requirements(self, action: str) -> List[str]:
         """
@@ -424,7 +441,7 @@ class AnomalyDetectionManager:
         required = self._REQUIREMENTS.get(action)
         if required is None:
             raise ValueError(f"Unknown action '{action}'. Known actions: {list(self._REQUIREMENTS)}")
-        missing_flags = required & ~self.state
+        missing_flags = required & ~self.readiness
         return [
             desc for flag, desc in self._STATE_DESCRIPTIONS.items()
             if flag in missing_flags
@@ -468,7 +485,7 @@ class AnomalyDetectionManager:
         if required is None:
             raise ValueError(f"Unknown action '{action}'. Known actions: {list(self._REQUIREMENTS)}")
 
-        missing_flags = required & ~self.state
+        missing_flags = required & ~self.readiness
         if not missing_flags:
             return
 
@@ -485,7 +502,6 @@ class AnomalyDetectionManager:
     
     def loadModelConfig(self, modelConfigPath: Path) -> ModelConfig:
         modelConfig = ModelConfig.from_yaml(modelConfigPath)
-        self.modelConfigPath = modelConfigPath
         self.modelConfig = modelConfig
         return modelConfig
     
@@ -513,9 +529,9 @@ class AnomalyDetectionManager:
             raise ConfigError(f"Model creation failed for config: {modelConfig}")
 
         self.model = model
-        self.state |= ManagerState.MODEL_LOADED
-        # loading a new model invalidates any previous training/tiling state
-        self.state &= ~(ManagerState.TILING_CONFIGURED | ManagerState.TRAINED | ManagerState.CHECKPOINT_AVAILABLE)
+        self.readiness |= ManagerReadiness.MODEL_LOADED
+        # loading a new model invalidates any previous training/tiling/calibration readiness
+        self.readiness &= ~(ManagerReadiness.TILING_CONFIGURED | ManagerReadiness.CHECKPOINT_AVAILABLE | ManagerReadiness.CALIBRATED)
         logger.info(f"Successfully loaded model {self.model.name}")
 
     def setupTiling(self, tilingPipelineConfig: TilingPipelineConfig) -> bool:
@@ -538,20 +554,31 @@ class AnomalyDetectionManager:
             tilingPipelineConfig.root_dir = self.outputDir
         self.tilingPipelineConfig = tilingPipelineConfig
         self.isTilingSetup = True
-        self.state |= ManagerState.TILING_CONFIGURED
+        self.readiness |= ManagerReadiness.TILING_CONFIGURED
         logger.info(f"Tiling configured: {tilingPipelineConfig}")
         return self.isTilingSetup
     
-    def _runConfigFiles(self) -> RunConfigFiles:
+    def _runConfigFiles(
+        self,
+        modelConfigPath: Optional[Path],
+        trainerConfigPath: Optional[Path],
+        tilingConfigPath: Optional[Path],
+        inferencerConfigPath: Optional[Path],
+    ) -> RunConfigFiles:
         """
-        The set of config files actually in use by this manager right now,
-        anchored to `self.configDir`. See `RunConfigFiles.copy_to` for how
-        these get laid out under a run directory.
+        The set of config files in use for the run being prepared, anchored
+        to `self.configDir`. See `RunConfigFiles.copy_to` for how these get
+        laid out under a run directory.
+
+        Takes the four paths as parameters rather than reading them off
+        `self` -- Manager doesn't keep its own copy of Product's config
+        paths (Product is the source of truth for those; see setup.Product),
+        so the caller (train()) passes through whatever it was given.
 
         Returns
         -------
         _name_ : RunConfigFiles
-            Config file paths currently tracked by the manager
+            Config file paths for the run being prepared.
         """
         preProcessorPath = postProcessorPath = evaluatorPath = None
         if self.modelConfig is not None:
@@ -561,10 +588,10 @@ class AnomalyDetectionManager:
 
         return RunConfigFiles(
             configDir=self.configDir,
-            modelConfigPath=self.modelConfigPath,
-            trainerConfigPath=self.trainerConfigPath,
-            tilingConfigPath=self.tilingConfigPath,
-            inferencerConfigPath=self.inferencerConfigPath,
+            modelConfigPath=modelConfigPath,
+            trainerConfigPath=trainerConfigPath,
+            tilingConfigPath=tilingConfigPath,
+            inferencerConfigPath=inferencerConfigPath,
             preProcessorPath=preProcessorPath,
             postProcessorPath=postProcessorPath,
             evaluatorPath=evaluatorPath,
@@ -593,16 +620,16 @@ class AnomalyDetectionManager:
         manager = cls(outputDir=outputPath, configDir=configDir)
         manager.generateModel(modelConfig=product.modelConfig)
         manager.setupTiling(product.tilingPipelineConfig)
-        manager.tilingConfigPath = product.tilingConfigPath
-        manager.trainerConfigPath = product.trainerConfigPath
-        manager.modelConfigPath = product.modelConfigPath
         manager.modelTrainingDir = product.modelTrainingDir
 
-        # loadProduct points at a model/weights path that presumably already has a checkpoint
+        # loadProduct points at a model/weights path that presumably already has a
+        # checkpoint and, if it was ever calibrated, a stats.json alongside it.
         if manager.modelTrainingDir is not None:
             manager.ckptDir = resolve_checkpoint_paths(manager.modelTrainingDir)
             if manager.ckptDir.exists():
-                manager.state |= ManagerState.CHECKPOINT_AVAILABLE | ManagerState.TRAINED
+                manager.readiness |= ManagerReadiness.CHECKPOINT_AVAILABLE
+            if resolve_stats_path(manager.modelTrainingDir).exists():
+                manager.readiness |= ManagerReadiness.CALIBRATED
         manager._apply_visualizer_output_dir(outputPath)
 
         return manager, product
@@ -631,7 +658,7 @@ class AnomalyDetectionManager:
                 raise AttributeError("Either path needs to be given to loadCheckpoint or ckptDir needs to be set for manager.")
         complete, missingCkpt = checkTiledCheckpointsExist(ckptDir=path, tilingPipelineConfig=tilingPipelineConfig)
         if complete:
-            self.state |= ManagerState.CHECKPOINT_AVAILABLE
+            self.readiness |= ManagerReadiness.CHECKPOINT_AVAILABLE
         else:
             missing:List[str] = [str(path) for path in missingCkpt]
             raise CheckpointNotFoundError(message=f"Follwing Checkpoints are missing from {path}", missing=missing)
@@ -828,7 +855,7 @@ class AnomalyDetectionManager:
         self.outputDir, self.runId = outputDir, runId
         self._apply_visualizer_output_dir(outputDir)
         self.setupTiling(tilingPipelineConfig)
-        self.state |= ManagerState.RUN_PREPARED
+        self.readiness |= ManagerReadiness.RUN_PREPARED
 
         return RunContext(runName=runId, outputDir=outputDir)
 
@@ -839,12 +866,40 @@ class AnomalyDetectionManager:
         datamoduleConfig: DataModuleConfig,
         tilingPipelineConfig: TilingPipelineConfig,
         datasetSession: Optional[DatasetSession] = None,
-    ) -> None:
-        datasetSession = self._resolve_dataset_session(datasetSession)
+        modelConfigPath: Optional[Path] = None,
+        trainerConfigPath: Optional[Path] = None,
+        tilingConfigPath: Optional[Path] = None,
+        inferencerConfigPath: Optional[Path] = None,
+    ) -> RunContext:
+        """
+        Train the current model on `datasetSession`, creating a new run
+        directory.
+
+        The four `*ConfigPath` arguments are only used to archive raw config
+        YAMLs alongside the run's manifest (see RunConfigFiles.copy_to) --
+        Manager doesn't keep its own copy of them, Product does (see
+        setup.Product), so pass `product.modelConfigPath` etc. through here.
+
+        Returns
+        -------
+        RunContext
+            The newly created training run (runName, outputDir). Callers
+            that also hold a Product for this manager should write
+            `ctx.outputDir` onto `product.modelTrainingDir` themselves --
+            Manager doesn't reach into Product to update it, so that sync
+            stays explicit and happens in exactly one place.
+        """
+        datasetSession = self.attachDatasetSession(datasetSession)
         self._require("train")
         ctx = self._prepareRun(trainerConfig, modelConfig, datasetSession, datamoduleConfig=datamoduleConfig, tilingPipelineConfig=tilingPipelineConfig)
-        self._runConfigFiles().copy_to(ctx.outputDir) 
-         # raw YAMLs alongside the manifest
+        if not ManagerReadiness.RUN_PREPARED in self.readiness:
+            raise ManagerReadinessError(f"Cannot run 'train': missing: {self._STATE_DESCRIPTIONS[ManagerReadiness.RUN_PREPARED]}",
+                        missing=[self._STATE_DESCRIPTIONS[ManagerReadiness.RUN_PREPARED]])
+        self._runConfigFiles(
+            modelConfigPath=modelConfigPath, trainerConfigPath=trainerConfigPath,
+            tilingConfigPath=tilingConfigPath, inferencerConfigPath=inferencerConfigPath,
+        ).copy_to(ctx.outputDir)
+        # raw YAMLs alongside the manifest
         self.ckptDir = resolve_checkpoint_paths(ctx.outputDir)
 
         self._trainTiledModel(
@@ -854,9 +909,16 @@ class AnomalyDetectionManager:
         )
         complete, missing = checkTiledCheckpointsExist(self.ckptDir, tilingPipelineConfig)
         if complete:
-            self.state |= ManagerState.TRAINED | ManagerState.CHECKPOINT_AVAILABLE
+            # train() produces a checkpoint, not thresholds -- CALIBRATED
+            # only comes from a subsequent eval() call.
+            self.modelTrainingDir = ctx.outputDir
+            self.readiness |= ManagerReadiness.CHECKPOINT_AVAILABLE
         else:
             logger.warning(f"Training finished but {len(missing)} tile checkpoint(s) missing: {missing}")
+
+        self.readiness &= ~(ManagerReadiness.RUN_PREPARED)
+
+        return ctx
 
     def eval(
         self,
@@ -866,11 +928,34 @@ class AnomalyDetectionManager:
         datasetSession: DatasetSession,
         tilingPipelineConfig: TilingPipelineConfig,
         modelTrainingDir: Optional[Path] = None,
-    ) -> None:
-        """Evaluate the current model on the current dataset. Tiled ensemble only for now."""
-        datasetSession = self._resolve_dataset_session(datasetSession)
-        # if modelTrainingDir is not None:
-        #     self.modelTrainingDir = modelTrainingDir
+        modelConfigPath: Optional[Path] = None,
+        trainerConfigPath: Optional[Path] = None,
+        tilingConfigPath: Optional[Path] = None,
+        inferencerConfigPath: Optional[Path] = None,
+    ) -> RunContext:
+        """
+        Evaluate the current model on the current dataset, determining the
+        anomaly thresholds (stats.json). Tiled ensemble only for now.
+
+        The eval run this creates is self-contained: copy_checkpoints() pulls
+        the checkpoints being evaluated into the run's own directory
+        alongside the stats.json the run produces. self.modelTrainingDir is
+        updated to point at *that* directory rather than the original
+        training run, so a subsequent inference() call on this same manager
+        (with modelTrainingDir omitted) finds both checkpoints/ and
+        stats.json in one place, and the original training run can be
+        retrained over or deleted without invalidating this calibrated one.
+
+        Returns
+        -------
+        Path
+            The new, self-contained calibrated run directory. Callers that
+            also hold a Product for this manager should write this onto
+            `product.modelTrainingDir` themselves -- Manager doesn't reach
+            into Product to update it, so that sync stays explicit and
+            happens in exactly one place.
+        """
+        datasetSession = self.attachDatasetSession(datasetSession)
         if modelTrainingDir is None:
             if self.modelTrainingDir is None:
                 raise AttributeError("Need a modelTrainingDir and neither attribute nor class atrribute are available")
@@ -883,15 +968,49 @@ class AnomalyDetectionManager:
                 missing=[f"Checkpoint file {p.name}" for p in missing],
             )
         else:
-            self.state |= ManagerState.CHECKPOINT_AVAILABLE
+            self.readiness |= ManagerReadiness.CHECKPOINT_AVAILABLE
         self._require("eval")
         ctx = self._prepareRun(evalConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
+        if not ManagerReadiness.RUN_PREPARED in self.readiness:
+            raise ManagerReadinessError(f"Cannot run 'train': missing: {self._STATE_DESCRIPTIONS[ManagerReadiness.RUN_PREPARED]}",
+                        missing=[self._STATE_DESCRIPTIONS[ManagerReadiness.RUN_PREPARED]])
+        self._runConfigFiles(
+            modelConfigPath=modelConfigPath, trainerConfigPath=trainerConfigPath,
+            tilingConfigPath=tilingConfigPath, inferencerConfigPath=inferencerConfigPath,
+        ).copy_to(ctx.outputDir)
         copy_checkpoints(self.ckptDir, ctx.outputDir)
         self._evalTiledModel(
             datasetSession=datasetSession, evalConfig=evalConfig,
             datamoduleConfig=datamoduleConfig, modelConfig=modelConfig,
             tilingPipelineConfig=tilingPipelineConfig,
         )
+
+        # Verify the eval run directory actually ended up self-contained
+        # (checkpoints copied in above, stats.json just written by the
+        # pipeline's statistics job) before treating it as the new canonical
+        # modelTrainingDir -- don't just trust the pipeline calls above
+        # succeeded silently.
+        newCkptDir = resolve_checkpoint_paths(ctx.outputDir)
+        complete, missing = checkTiledCheckpointsExist(newCkptDir, tilingPipelineConfig)
+        if not complete:
+            raise CheckpointNotFoundError(
+                f"Checkpoints failed to copy into the eval run at {newCkptDir}: missing: {[p.name for p in missing]}",
+                missing=[f"Checkpoint file {p.name}" for p in missing],
+            )
+        statsPath = resolve_stats_path(ctx.outputDir)
+        if not statsPath.exists():
+            raise CalibrationNotFoundError(
+                f"eval() completed but no stats.json was written to {statsPath}.",
+                missing=["stats.json"],
+            )
+
+        self.modelTrainingDir = ctx.outputDir
+        self.ckptDir = newCkptDir
+        self.readiness |= ManagerReadiness.CHECKPOINT_AVAILABLE | ManagerReadiness.CALIBRATED
+
+        self.readiness &= ~(ManagerReadiness.RUN_PREPARED)
+
+        return ctx
 
     def inference(
         self,
@@ -901,13 +1020,17 @@ class AnomalyDetectionManager:
         datasetSession: DatasetSession,
         tilingPipelineConfig: TilingPipelineConfig,
         modelTrainingDir: Optional[Path] = None,
+        modelConfigPath: Optional[Path] = None,
+        trainerConfigPath: Optional[Path] = None,
+        tilingConfigPath: Optional[Path] = None,
+        inferencerConfigPath: Optional[Path] = None,
     ) -> None:
         """Run inference: write results under the *current* dataset's output dir,
         but read the checkpoint from `trainingDir` (a prior, separate run).
         This replaces the old adjustPaths(..., adjustCheckpoints=False) workaround —
         the two directories are now resolved independently and explicitly.
         """
-        datasetSession = self._resolve_dataset_session(datasetSession)
+        datasetSession = self.attachDatasetSession(datasetSession)
         if modelTrainingDir is not None:
             self.modelTrainingDir = modelTrainingDir
         else:
@@ -924,11 +1047,17 @@ class AnomalyDetectionManager:
             )
         
         self._require("inference")
-        self._prepareRun(inferencerConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
+        ctx = self._prepareRun(inferencerConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
 
-        # self.outputDir = ctx.outputDir
-        # self._apply_visualizer_output_dir(ctx.outputDir)
-        # self.setupTiling(tilingPipelineConfig)
+        if not ManagerReadiness.RUN_PREPARED in self.readiness:
+            raise ManagerReadinessError(f"Cannot run 'train': missing: {self._STATE_DESCRIPTIONS[ManagerReadiness.RUN_PREPARED]}",
+                        missing=[self._STATE_DESCRIPTIONS[ManagerReadiness.RUN_PREPARED]])
+        
+        self._runConfigFiles(
+            modelConfigPath=modelConfigPath, trainerConfigPath=trainerConfigPath,
+            tilingConfigPath=tilingConfigPath, inferencerConfigPath=inferencerConfigPath,
+        ).copy_to(ctx.outputDir)
+        copy_checkpoints(self.ckptDir, ctx.outputDir)
 
         self._inferenceTiledModel(
             trainingDir=modelTrainingDir, 
@@ -939,6 +1068,9 @@ class AnomalyDetectionManager:
             inferencerConfig=inferencerConfig, 
             modelConfig=modelConfig,
         )
+
+        self.readiness &= ~(ManagerReadiness.RUN_PREPARED)
+
 
     def exportResults(self, exportPath:Path) -> None:
         # Create the destination directory if it doesn't exist

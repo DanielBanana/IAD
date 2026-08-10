@@ -56,6 +56,12 @@ def resolve_checkpoint_paths(trainingDir: Path) -> Path:
     return trainingDir / "checkpoints"
 
 
+def resolve_stats_path(trainingDir: Path) -> Path:
+    """Where stats.json (calibrated anomaly thresholds, written by eval()) lives
+    within a given (already-resolved) training run directory."""
+    return trainingDir / "stats.json"
+
+
 def resolve_wandb_manifest_dir(trainingDir: Path) -> Path:
     """Where each tile's W&B run-id manifest lives within a given training run directory."""
     return trainingDir / "wandb_runs"
