@@ -816,28 +816,34 @@ class AnomalyDetectionManager:
         datasetSession: DatasetSession,
         datamoduleConfig: DataModuleConfig,
         tilingPipelineConfig: TilingPipelineConfig,
-        runLabel: Optional[str] = None
+        runLabel: Optional[str] = None,
+        runId: Optional[str] = None,
     ) -> RunContext:
         """
-        Shared setup for train()/eval(): resolve paths, wire up tiling,
+        Shared setup for train()/eval()/inference(): resolve paths, wire up tiling,
         callbacks and the W&B logger. Output dir doubles as the checkpoint dir
         since these runs write and read within the same location.
 
         Parameters
         ----------
         modelConfig : ModelConfig
-            Descibes an anomaly detection model 
+            Descibes an anomaly detection model
         datasetSession : DatasetSession
-            Contains the dataset 
+            Contains the dataset
         tilingPipelineConfig : TilingPipelineConfig
             How should the image be tiled?
+        runId : Optional[str] (optional)
+            If given, used directly as the run id instead of generating a fresh
+            one -- lets repeated calls (e.g. one inference() per image during a
+            shift session) share a single output directory instead of each
+            getting its own. See AD_Worker's shift_* commands.
 
         Returns
         -------
         _name_ : RunContext
             Run name, output directory, checkpoint directory, (checkpoint path, not applicable for tiled)
         """
-        runId = generate_run_id(runLabel)
+        runId = runId if runId is not None else generate_run_id(runLabel)
         outputDir = resolve_output_dir(
             baseOutputDir=self.baseOutputDir, datasetName=datasetSession.datasetName,
             modelName=modelConfig.name, runId=runId, category=datasetSession.category[0] if datasetSession.category else None, tiling=True,
@@ -1029,6 +1035,11 @@ class AnomalyDetectionManager:
         but read the checkpoint from `trainingDir` (a prior, separate run).
         This replaces the old adjustPaths(..., adjustCheckpoints=False) workaround —
         the two directories are now resolved independently and explicitly.
+
+        `runId`, if given, pins the output directory instead of generating a
+        fresh one -- pass the same value across repeated calls (e.g. one call
+        per image during a shift session) to have them all write into a single
+        shared results directory.
         """
         datasetSession = self.attachDatasetSession(datasetSession)
         if modelTrainingDir is not None:
@@ -1045,7 +1056,7 @@ class AnomalyDetectionManager:
                 f"Incomplete checkpoint set in {self.ckptDir}: missing {[p.name for p in missing]}",
                 missing=[f"Checkpoint file {p.name}" for p in missing],
             )
-        
+
         self._require("inference")
         ctx = self._prepareRun(inferencerConfig, modelConfig, datasetSession, datamoduleConfig, tilingPipelineConfig)
 
