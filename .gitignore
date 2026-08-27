@@ -29,7 +29,8 @@ res__
 
 wandb
 
-__pychache__
+__pycache__
+*.pyc
 
 db
 
