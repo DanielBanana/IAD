@@ -29,6 +29,7 @@ from run_paths import (
     tile_checkpoint_filename,
     tile_wandb_run_id,
 )
+from tiling.gui_training_callback import GUITrainingProgressCallback
 
 # PYTORCH LIGHTNING
 if TYPE_CHECKING:
@@ -43,11 +44,16 @@ class TileContext:
     manager's run directory, threaded down unchanged; the run id and every derived path/name
     are read from run_paths.py, not invented here) - see run_paths.py's docstring for why
     those live in their own module instead of directly on the manager.
+
+    total_tiles comes from the engine (see AOITiledEnsembleEngine.__init__), which itself
+    gets it from get_ensemble_engine/TrainModelJob - ultimately the same tiler.num_tiles
+    TrainModelJobGenerator.generate_jobs() already computes and logs before the tile loop.
     """
 
-    def __init__(self, tile_index: tuple[int, int], default_root_dir: Path) -> None:
+    def __init__(self, tile_index: tuple[int, int], default_root_dir: Path, total_tiles: int = 1) -> None:
         self.tile_index = tile_index
         self.default_root_dir = default_root_dir
+        self.total_tiles = total_tiles
         self.tile_id = tile_checkpoint_filename(tile_index)
         self.run_id = run_id_from_training_dir(default_root_dir)
         self.checkpoint_dir = resolve_checkpoint_paths(default_root_dir)
@@ -92,6 +98,22 @@ def _adjust_early_stopping_checkpoint(callback: EarlyStopping, ctx: TileContext)
         check_on_train_epoch_end=callback._check_on_train_epoch_end,
         log_rank_zero_only=callback.log_rank_zero_only
     )
+
+
+def _adjust_gui_progress_callback(callback: GUITrainingProgressCallback, ctx: TileContext) -> "Callback":
+    """Set total_tiles on the config-provided callback from the tiler, in place.
+
+    Unlike _adjust_model_checkpoint/_adjust_early_stopping_checkpoint above, this must return
+    the SAME instance rather than a clone: the callback tracks tiles_completed cumulatively
+    across the whole run (see its own docstring), and handing back a fresh instance every
+    tile would reset that counter to 0 each time instead of accumulating it. Mutating
+    total_tiles in place is safe here precisely because it's the one piece of tile-grid
+    information the callback couldn't have known at YAML-parse time (see
+    GUITrainingProgressCallback's docstring) - everything else about it is already correct
+    from construction.
+    """
+    callback.total_tiles = ctx.total_tiles
+    return callback
 
 
 def _adjust_wandb_logger(run_logger: AnomalibWandbLogger, ctx: TileContext) -> "Logger":
@@ -157,6 +179,7 @@ def _adjust_wandb_logger(run_logger: AnomalibWandbLogger, ctx: TileContext) -> "
 _CALLBACK_ADJUSTERS: list[tuple[type, Callable[..., Any]]] = [
     (LightningModelCheckpoint, _adjust_model_checkpoint),
     (EarlyStopping, _adjust_early_stopping_checkpoint),
+    (GUITrainingProgressCallback, _adjust_gui_progress_callback),
 ]
 _LOGGER_ADJUSTERS: list[tuple[type, Callable[..., Any]]] = [
     (AnomalibWandbLogger, _adjust_wandb_logger),
@@ -165,7 +188,8 @@ _LOGGER_ADJUSTERS: list[tuple[type, Callable[..., Any]]] = [
 
 class AOITiledEnsembleEngine(TiledEnsembleEngine):
 
-    def __init__(self, tile_index: tuple[int, int], **kwargs) -> None:
+    def __init__(self, tile_index: tuple[int, int], total_tiles: int = 1, **kwargs) -> None:
+        self.total_tiles = total_tiles
         super().__init__(tile_index, **kwargs)
 
     @staticmethod
@@ -194,7 +218,7 @@ class AOITiledEnsembleEngine(TiledEnsembleEngine):
         still guaranteed present (added with defaults if the config didn't include one),
         matching anomalib's own default behaviour.
         """
-        ctx = TileContext(self.tile_index, self._cache.args["default_root_dir"])
+        ctx = TileContext(self.tile_index, self._cache.args["default_root_dir"], total_tiles=self.total_tiles)
 
         adjusted_callbacks: list[Callback] = []
         for callback in self._cache.args["callbacks"]:

@@ -1500,6 +1500,19 @@ class Product:
         # self.modelConfig.name = modelName
         return resolvedRunDir
 
+    def loadTrainer(self, trainerConfigPath:Path) -> None:
+        self.trainerConfig:TrainerConfig = TrainerConfig.load_trainer_config_from_yaml(trainerConfigPath)
+        self.datamoduleConfig:DataModuleConfig = DataModuleConfig.load_datamodule_config_from_yaml(trainerConfigPath)
+        self.trainerConfigPath = trainerConfigPath
+
+    def loadInferencer(self, inferencerConfigPath:Path) -> None:
+        self.inferencer:TrainerConfig = TrainerConfig.load_trainer_config_from_yaml(inferencerConfigPath)
+        self.datamoduleConfig:DataModuleConfig = DataModuleConfig.load_datamodule_config_from_yaml(inferencerConfigPath)
+        self.inferencerConfigPath = inferencerConfigPath
+
+    def loadTiling(self, tilingConfigPath:Path) -> None:
+        self.tilingPipelineConfig:TilingPipelineConfig = TilingPipelineConfig.load_tiling_pipeline_config_from_yaml(tilingConfigPath)
+        self.tilingConfigPath = tilingConfigPath
 
 def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = None, baseOutputDir: Optional[Path] = None) -> Product:
     training_dir: Path | None
@@ -1695,7 +1708,6 @@ def loadProductFromYaml(product_yaml_path: Path, config_dir: Optional[Path] = No
             raise ValueError("inferencer.config must be a non-empty string")
         inferencer_config_path = resolve_product_config_path(inferencer_config_name, product_yaml_path, config_dir, subdir="Trainer")
         inferencer_config = TrainerConfig.load_trainer_config_from_yaml(inferencer_config_path)
-
 
     return Product(
         name=product_name,

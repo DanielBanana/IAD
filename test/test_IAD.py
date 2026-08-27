@@ -21,7 +21,6 @@ class TestIAD(unittest.TestCase):
     """
     def setUp(self) -> None:
         # os.environ["FIFTYONE_DATABASE_URI"] = "mongodb://localhost"
-        # os.environ["WANDB_API_KEY"] = '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'
         # wandb.login()
         self.adm = AnomalyDetectionManager()
         self.modelName = "padim.yaml"

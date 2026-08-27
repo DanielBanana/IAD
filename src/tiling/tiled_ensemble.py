@@ -840,6 +840,10 @@ class TrainModelJob(Job):
         seed (int): Random seed for reproducibility.
         root_dir (Path): Root directory to save checkpoints, stats and images.
         tile_index (tuple[int, int]): Index of tile that this model processes.
+        total_tiles (int): Total number of tiles in this ensemble run (see
+            TrainModelJobGenerator.generate_jobs' tiler.num_tiles) -- threaded down to
+            AOITiledEnsembleEngine so GUITrainingProgressCallback (if configured) can report
+            accurate tile-progress without needing total_tiles set by hand in the trainer yaml.
         normalization_stage (str): Normalization stage flag.
         metrics (dict): metrics dict with pixel and image metric names.
         trainer_args (dict| None): Additional arguments to pass to the trainer class.
@@ -856,6 +860,7 @@ class TrainModelJob(Job):
         seed: int,
         root_dir: Path,
         tile_index: tuple[int, int],
+        total_tiles: int,
         normalization_stage: str,
         trainer_args: dict[str,Any] | None,
         model: AnomalibModule,
@@ -868,6 +873,7 @@ class TrainModelJob(Job):
         self.seed = seed
         self.root_dir = root_dir
         self.tile_index = tile_index
+        self.total_tiles = total_tiles
         self.normalization_stage = normalization_stage
         self.trainer_args = trainer_args
         self.model = model
@@ -900,6 +906,7 @@ class TrainModelJob(Job):
         logger.info(f"Creating engine for tile {self.tile_index} on device {devices}, accelerator: {self.accelerator}, trainer_args: {self.trainer_args}")
         engine = get_ensemble_engine(
             tile_index=self.tile_index,
+            total_tiles=self.total_tiles,
             accelerator=self.accelerator,
             devices=devices,
             root_dir=self.root_dir,
@@ -1028,6 +1035,7 @@ class TrainModelJobGenerator(JobGenerator):
                 seed=self.seed,
                 root_dir=self.root_dir,
                 tile_index=tile_index,
+                total_tiles=tiler.num_tiles,
                 normalization_stage=self.normalization_stage,
                 trainer_args=args,
                 model=model,
@@ -1623,6 +1631,7 @@ def get_ensemble_engine(
     devices: List[int] | str | int,
     root_dir: Path,
     trainer_args: dict | None = None,
+    total_tiles: int = 1,
 ) -> AOITiledEnsembleEngine:
     """Prepare engine for ensemble training or prediction.
 
@@ -1634,6 +1643,11 @@ def get_ensemble_engine(
         devices (List[int] | str | int): device IDs used for training.
         root_dir (Path): Root directory to save checkpoints, stats and images.
         trainer_args (dict): Trainer args dictionary. Empty dict if not present.
+        total_tiles (int): Total tile count for this run (see TrainModelJob). Only meaningful
+            for training -- callers on the predict-only path (no total tile count to give)
+            can leave this at its default; it's just forwarded to
+            GUITrainingProgressCallback via AOITiledEnsembleEngine, which only ever reports
+            progress from inside a trainer.fit() call.
 
     Returns:
         AOITiledEnsembleEngine: set up engine for ensemble training/prediction.
@@ -1650,6 +1664,7 @@ def get_ensemble_engine(
     # create engine for specific tile location
     engine = AOITiledEnsembleEngine(
         tile_index=tile_index,
+        total_tiles=total_tiles,
         accelerator=accelerator,
         devices=devices,
         default_root_dir=root_dir,
