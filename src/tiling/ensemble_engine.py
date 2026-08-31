@@ -30,6 +30,7 @@ from run_paths import (
     tile_wandb_run_id,
 )
 from tiling.gui_training_callback import GUITrainingProgressCallback
+from tiling.gui_predict_callback import GUIPredictProgressCallback
 
 # PYTORCH LIGHTNING
 if TYPE_CHECKING:
@@ -116,6 +117,18 @@ def _adjust_gui_progress_callback(callback: GUITrainingProgressCallback, ctx: Ti
     return callback
 
 
+def _adjust_gui_predict_progress_callback(callback: GUIPredictProgressCallback, ctx: TileContext) -> "Callback":
+    """Set total_tiles on the config-provided callback from the tiler, in place.
+
+    Predict-side counterpart to _adjust_gui_progress_callback above, same
+    reasoning: must return the SAME instance, since GUIPredictProgressCallback
+    tracks tiles_completed cumulatively across the whole predict run (see its
+    own docstring) rather than resetting itself every tile.
+    """
+    callback.total_tiles = ctx.total_tiles
+    return callback
+
+
 def _adjust_wandb_logger(run_logger: AnomalibWandbLogger, ctx: TileContext) -> "Logger":
     """Relocate a user/config-provided AnomalibWandbLogger to this tile's own W&B run.
 
@@ -180,6 +193,7 @@ _CALLBACK_ADJUSTERS: list[tuple[type, Callable[..., Any]]] = [
     (LightningModelCheckpoint, _adjust_model_checkpoint),
     (EarlyStopping, _adjust_early_stopping_checkpoint),
     (GUITrainingProgressCallback, _adjust_gui_progress_callback),
+    (GUIPredictProgressCallback, _adjust_gui_predict_progress_callback),
 ]
 _LOGGER_ADJUSTERS: list[tuple[type, Callable[..., Any]]] = [
     (AnomalibWandbLogger, _adjust_wandb_logger),

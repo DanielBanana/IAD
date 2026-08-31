@@ -8,3 +8,12 @@ test_split_ratio: 0.0
 val_split_mode: "none" # none, same_as_text, from_train, from_test, synthetic (from train_data)
 val_split_ratio: 0.0 # not used if same_as_test
 accelerator: "auto"  # Also tried cpu, gpu, auto
+
+callbacks:
+  # Reports progress to the GUI's Predict Progress bars (see
+  # tiling/gui_predict_callback.py) -- driven by the predict loop's own
+  # on_predict_batch_end, since predict never goes through the fit loop
+  # GUITrainingProgressCallback reacts to. No init_args needed: total_tiles
+  # is set automatically from the tiling config's real tile count (see
+  # ensemble_engine.py's _adjust_gui_predict_progress_callback).
+  - class_path: tiling.gui_predict_callback.GUIPredictProgressCallback

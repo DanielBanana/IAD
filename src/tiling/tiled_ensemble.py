@@ -1057,6 +1057,17 @@ class InferenceJob(Job):
         engine (AOITiledEnsembleEngine | None):
             engine from train job. If job is used standalone, instantiate engine and model from checkpoint.
         ckpt_path (Path | None): Path to checkpoint to be loaded if engine doesn't contain correct weights.
+        trainer_args (dict | None): `{"callbacks": [...]}` only (see
+            InferenceJobGenerator.generate_jobs' predict_trainer_args for why it's just
+            callbacks, e.g. a configured GUIPredictProgressCallback -- see
+            tiling/gui_predict_callback.py -- and not the rest of the source config's
+            kwargs) to hand to get_ensemble_engine when this job builds its own engine (the
+            `engine is None` case below). Only meaningful there -- a reused, already-built
+            engine (predict chained right after training) already has its own callbacks.
+        total_tiles (int): Total tile count for this predict run (see
+            InferenceJobGenerator.generate_jobs), forwarded to get_ensemble_engine so
+            GUIPredictProgressCallback (if configured) knows the true denominator for its
+            tile-progress fraction without needing it set by hand in the inferencer yaml.
 
     """
 
@@ -1073,6 +1084,8 @@ class InferenceJob(Job):
         model: AnomalibModule | None,
         engine: AOITiledEnsembleEngine | None,
         ckpt_path: Path | None,
+        trainer_args: dict[str, Any] | None = None,
+        total_tiles: int = 1,
     ) -> None:
         super().__init__()
         if engine is None and ckpt_path is None:
@@ -1090,6 +1103,8 @@ class InferenceJob(Job):
         self.model = model
         self.engine = engine
         self.ckpt_path = ckpt_path
+        self.trainer_args = trainer_args
+        self.total_tiles = total_tiles
 
     def run(
         self,
@@ -1120,6 +1135,8 @@ class InferenceJob(Job):
                 accelerator=self.accelerator,
                 devices=devices,
                 root_dir=self.root_dir,
+                trainer_args=self.trainer_args,
+                total_tiles=self.total_tiles,
             )
 
         logger.info(f"Batches: {len(self.dataloader)} - Batchsize = {self.dataloader.batch_size}")
@@ -1195,15 +1212,17 @@ class InferenceJobGenerator(JobGenerator):
         """Generate predict jobs for each tile location.
 
         Args:
-            args (dict): Dict with config passed to training.
+            args (dict): Trainer kwargs from the inferencer config (see
+                _pipeline_trainer_kwargs(self.inferencerConfig) in InferenceTiledEnsemble.run) --
+                threaded into each tile's InferenceJob as trainer_args so a configured
+                GUIPredictProgressCallback (or any other predict-time callback) actually
+                reaches the Trainer this generator's jobs build, instead of being dropped here.
             prev_stage_result (dict[tuple[int, int], AOITiledEnsembleEngine] | None):
                 if called after train job this contains engines with individual models, otherwise load from checkpoints.
 
         Returns:
             Generator[PredictJob, None, None]: PredictJob generator.
         """
-        # del args  # args not used here
-
         # tiler used for splitting the image and getting the tile count
         tiler = get_ensemble_tiler(self.tilingPipelineConfig.to_dict())
 
@@ -1211,6 +1230,21 @@ class InferenceJobGenerator(JobGenerator):
             "Tiled ensemble predicting started using Using ckpt_path%s data.",
             self.data_source.value,
         )
+
+        # Only forward `callbacks` (e.g. a configured GUIPredictProgressCallback) out of
+        # `args`, not the whole dict -- InferenceJobGenerator is shared by both standalone
+        # predict (args built from the inferencer config) and EvalTiledEnsemble's
+        # calibration val/test passes (args built from the *training* config, which is
+        # where the project's wandb logger normally lives). Forwarding `args` wholesale
+        # would hand that wandb logger to every per-tile predict engine built here too --
+        # something this generator never did before (get_ensemble_engine's callers here
+        # always passed trainer_args=None) -- and each of this generator's separate
+        # generate_jobs() calls (once per data_source mode in EvalTiledEnsemble, e.g. val
+        # then test) deep-copies its own fresh logger instance via _pipeline_trainer_kwargs,
+        # so two modes visiting the same tile_index collide over the same wandb run id
+        # (see ensemble_engine.py's _adjust_wandb_logger). Stripping logger here keeps
+        # predict-time callbacks working without resurrecting that collision.
+        predict_trainer_args = {"callbacks": args["callbacks"]} if args and args.get("callbacks") else None
         # go over all tile positions
         for tile_index in product(range(tiler.num_patches_h), range(tiler.num_patches_w)):
             # prepare datamodule with custom collate function that only provides specific tile of image
@@ -1288,6 +1322,8 @@ class InferenceJobGenerator(JobGenerator):
                 dataloader=dataloader,
                 engine=engine,
                 ckpt_path=ckpt_path,
+                trainer_args=predict_trainer_args,
+                total_tiles=tiler.num_tiles,
             )
 
 class FOPredictJob(Job):
